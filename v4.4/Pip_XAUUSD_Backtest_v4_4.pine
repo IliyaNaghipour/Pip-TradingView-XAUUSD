@@ -1,0 +1,394 @@
+//@version=6
+// پیپ نسخه ۴٫۴ — بک‌تست — فقط TradingView — Pine Script v6
+// نسخه ۴٫۴: اصلاح خطای کامپایل خط ۳۲۸ که ایلیا در Pine Editor دید (گزارش کامل: PIP_V4_4_FIX_FA.md).
+// در Pine v6 خودِ strategy.closedtrades تعداد معاملات بسته‌شده است؛ .size() حجم یک معامله
+// مشخص را برمی‌گرداند (عدد اعشاری)، نه تعداد معاملات. پس int n = strategy.closedtrades درست است.
+// مهم‌ترین اصلاحات: امتیاز OB نرمال‌سازی شد (سقف قبلی ۵۵ بود و با حداقل ۵۵ تقریباً هیچ
+// معامله‌ای نمی‌گرفت)؛ چند اردر بلاک هم‌زمان نگه داشته می‌شود (قبلی فقط یکی بود و هر
+// جابه‌جایی جدید، ناحیه قبلی را دور می‌انداخت)؛ حجم معامله بر اساس ریسک ۱٪ محاسبه می‌شود؛
+// شمارش TP1/TP2/SL اصلاح شد (قبلاً TP1 همیشه صفر بود چون خروج جزئی معامله بسته نمی‌سازد).
+// استراتژی جدا از اندیکاتور. ورود = لمس اردر بلاک در جهت روند HTF (امتیاز ≥ حداقل)
+// یا تأیید ۱-۲-۳. حد ضرر = کف/سقف ناحیه ± ATR × بافر. حد سود ۱ = ۱:۲ (۵۰٪ حجم)،
+// حد سود ۲ = ۱:۳ (باقی‌مانده). همه ورودها روی کندل تأییدشده و با
+// process_orders_on_close=true ثبت می‌شوند تا Repaint نداشته باشند. HTF فقط از کندل
+// تأییدشده قبلی خوانده می‌شود.
+//
+// هشدار مهم: آمار بک‌تست تضمین عملکرد آینده نیست. اسپرد، کمیسیون و لغزش قیمت
+// در بک‌تست تقریبی‌اند و در بازار واقعی متفاوت‌اند. فقط روی دمو تست کن.
+
+strategy("پیپ ۴٫۴ — بک‌تست طلا", shorttitle="پیپ ۴٫۴ بک‌تست", overlay=true,
+     initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10,
+     currency=currency.USD, pyramiding=0, process_orders_on_close=true,
+     commission_type=strategy.commission.percent, commission_value=0.02, slippage=2,
+     max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ───────────────────────── ورودی‌ها ─────────────────────────
+emaFastLen = input.int(50, "میانگین سریع", minval=5, maxval=200)
+emaSlowLen = input.int(200, "میانگین کند", minval=20, maxval=400)
+htfTF      = input.timeframe("60", "تایم‌فریم بالاتر")
+obDispATR  = input.float(1.0, "حداقل جابه‌جایی OB (برابر ATR)", minval=0.3, maxval=3.0, step=0.1)
+obLookback = input.int(20, "جستجوی کندل مخالف OB (کندل)", minval=5, maxval=50)
+minOBScore = input.int(55, "حداقل امتیاز OB برای ورود", minval=0, maxval=100)
+atrBuffer  = input.float(0.2, "فاصله حد ضرر از ناحیه (برابر ATR)", minval=0.0, maxval=1.0, step=0.05)
+riskPct    = input.float(1.0, "ریسک هر معامله (٪ سرمایه)", minval=0.1, maxval=5.0, step=0.1)
+tp1RR      = input.float(2.0, "نسبت حد سود ۱", minval=0.5, maxval=5.0, step=0.5)
+tp2RR      = input.float(3.0, "نسبت حد سود ۲", minval=1.0, maxval=6.0, step=0.5)
+// کمیسیون (۰٫۰۲٪) و لغزش (۲ تیک) مستقیم در فراخوانی strategy() ست شده‌اند؛
+// برای تغییر آن‌ها، همان دو عدد را در خط strategy() عوض کن.
+use123     = input.bool(true, "ورود با تأیید ۱-۲-۳ هم فعال باشد")
+startDate  = input.time(timestamp("2024-01-01"), "شروع بک‌تست")
+endDate    = input.time(timestamp("2026-11-11"), "پایان بک‌تست (این روز شامل نمی‌شود)")
+
+// ───────────────────────── هسته ─────────────────────────
+atr     = ta.atr(14)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+trendUp   = close > emaFast and emaFast > emaSlow
+trendDown = close < emaFast and emaFast < emaSlow
+trendState = trendUp ? 1 : trendDown ? -1 : 0
+
+[htfClose, htfEmaF, htfEmaS] = request.security(syminfo.tickerid, htfTF, [close[1], ta.ema(close, emaFastLen)[1], ta.ema(close, emaSlowLen)[1]], lookahead=barmerge.lookahead_on)
+htfTrend = htfClose > htfEmaF and htfEmaF > htfEmaS ? 1 : htfClose < htfEmaF and htfEmaF < htfEmaS ? -1 : 0
+// اگر تایم‌فریم چارت از HTF بالاتر باشد، به روند خود چارت برمی‌گردیم (مثل اندیکاتور).
+htfValid = timeframe.in_seconds(htfTF) >= timeframe.in_seconds(timeframe.period)
+htfTrendSafe = htfValid ? htfTrend : trendState
+// بازه نیمه‌باز [شروع، پایان): پایان ۲۰۲۶-۱۱-۱۱ یعنی تا آخر ۱۰ نوامبر حساب می‌شود.
+inRange = time >= startDate and time < endDate
+
+// امتیاز جلسه برای OB (مثل اندیکاتور): کیل‌زون لندن/نیویورک ۵، هر جلسه ۲، بیرون جلسه ۰
+inAsia = not na(time(timeframe.period, "0000-0600", "Asia/Tokyo"))
+inLdn  = not na(time(timeframe.period, "0800-1630", "Europe/London"))
+inNy   = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+inLdnKz = not na(time(timeframe.period, "0700-0900", "Europe/London"))
+inNyKz  = not na(time(timeframe.period, "0700-0900", "America/New_York"))
+sessBonus = inLdnKz or inNyKz ? 5.0 : inAsia or inLdn or inNy ? 2.0 : 0.0
+
+ph = ta.pivothigh(high, 2, 2)
+pl = ta.pivotlow(low, 2, 2)
+
+// ───────────────────────── اردر بلاک — چند ناحیه هم‌زمان (حداکثر ۳ در هر جهت) ─────────────────────────
+// هر ناحیه ۵ ویژگی دارد که در ۵ آرایه موازی با یک شاخص نگه داشته می‌شوند.
+// قدیمی‌ترین ناحیه وقتی تعداد از ۳ گذشت حذف می‌شود (array.shift روی هر ۵ آرایه).
+var float[] bullTops   = array.new_float()
+var float[] bullBots   = array.new_float()
+var float[] bullScores = array.new_float()
+var bool[]  bullInZone = array.new_bool()
+var int[]   bullBars   = array.new_int()
+var float[] bearTops   = array.new_float()
+var float[] bearBots   = array.new_float()
+var float[] bearScores = array.new_float()
+var bool[]  bearInZone = array.new_bool()
+var int[]   bearBars   = array.new_int()
+
+f_lastOpp(int dir, int n) =>
+    int idx = na
+    for i = 1 to n
+        if na(idx) and dir == 1 and close[i] < open[i]
+            idx := i
+        if na(idx) and dir == -1 and close[i] > open[i]
+            idx := i
+    idx
+
+// امتیاز OB نرمال‌شده به ۰–۱۰۰:
+// خام = هم‌راستایی HTF ‏۲۵ + جابه‌جایی تا ‏۲۰ + تازگی ‏۱۰ + جلسه تا ‏۵ = سقف ‏۶۰
+// امتیاز = خام / ۶۰ × ۱۰۰ — در ۴٫۲ سقف خام ۵۵ بود و مستقیم با حداقل ۵۵ مقایسه می‌شد،
+// پس فقط جابه‌جایی ≥ ۳×ATR قبول می‌شد و تقریباً هیچ معامله OBای ثبت نمی‌شد.
+f_obScore(float disp) =>
+    float raw = 25.0 + math.min(disp / atr, 3.0) / 3.0 * 20.0 + 10.0 + sessBonus
+    raw / 60.0 * 100.0
+
+bool atrOk = not na(atr) and atr > 0
+bullDisp = atrOk and close > open and (close - open) > atr * obDispATR and close > high[1]
+bearDisp = atrOk and close < open and (open - close) > atr * obDispATR and close < low[1]
+if bullDisp and htfTrendSafe >= 0 and barstate.isconfirmed
+    int bi = f_lastOpp(1, obLookback)
+    if not na(bi)
+        // ناحیه تکراری نساز: اگر همین کندل مخالف قبلاً ناحیه شده، رد شو (مثل اندیکاتور).
+        bool dup = false
+        if array.size(bullBars) > 0
+            for i = 0 to array.size(bullBars) - 1
+                if array.get(bullBars, i) == bar_index - bi
+                    dup := true
+        if not dup
+            array.push(bullTops, high[bi])
+            array.push(bullBots, low[bi])
+            array.push(bullScores, f_obScore(close - open))
+            array.push(bullInZone, false)
+            array.push(bullBars, bar_index - bi)
+            if array.size(bullTops) > 3
+                array.shift(bullTops)
+                array.shift(bullBots)
+                array.shift(bullScores)
+                array.shift(bullInZone)
+                array.shift(bullBars)
+if bearDisp and htfTrendSafe <= 0 and barstate.isconfirmed
+    int bi = f_lastOpp(-1, obLookback)
+    if not na(bi)
+        bool dup = false
+        if array.size(bearBars) > 0
+            for i = 0 to array.size(bearBars) - 1
+                if array.get(bearBars, i) == bar_index - bi
+                    dup := true
+        if not dup
+            array.push(bearTops, high[bi])
+            array.push(bearBots, low[bi])
+            array.push(bearScores, f_obScore(open - close))
+            array.push(bearInZone, false)
+            array.push(bearBars, bar_index - bi)
+            if array.size(bearTops) > 3
+                array.shift(bearTops)
+                array.shift(bearBots)
+                array.shift(bearScores)
+                array.shift(bearInZone)
+                array.shift(bearBars)
+
+// لمس و ابطال ناحیه‌ها — فقط روی کندل تأییدشده (در ۴٫۲ ابطال روی هر تیک هم اجرا می‌شد).
+// حلقه از جدیدترین به قدیمی‌ترین می‌رود؛ اگر چند ناحیه هم‌زمان لمس شدند، پرامتیازترین سیگنال همان کندل است.
+bool obBullTouch = false
+bool obBearTouch = false
+var float touchBullBot = na
+var float touchBullScore = na
+var float touchBearTop = na
+var float touchBearScore = na
+if barstate.isconfirmed
+    if array.size(bullTops) > 0
+        for i = array.size(bullTops) - 1 to 0
+            float top = array.get(bullTops, i)
+            float bot = array.get(bullBots, i)
+            if close < bot
+                // ابطال: بسته‌شدن زیر ناحیه — حذف ناحیه از هر ۵ آرایه
+                array.remove(bullTops, i)
+                array.remove(bullBots, i)
+                array.remove(bullScores, i)
+                array.remove(bullInZone, i)
+                array.remove(bullBars, i)
+            else if low <= top and high >= bot
+                if not array.get(bullInZone, i)
+                    array.set(bullInZone, i, true)
+                    // اگر چند ناحیه هم‌زمان لمس شدند، پرامتیازترین انتخاب می‌شود (نه جدیدترین).
+                    if not obBullTouch or array.get(bullScores, i) > touchBullScore
+                        obBullTouch := true
+                        touchBullBot := bot
+                        touchBullScore := array.get(bullScores, i)
+            else
+                array.set(bullInZone, i, false)
+    if array.size(bearTops) > 0
+        for i = array.size(bearTops) - 1 to 0
+            float top = array.get(bearTops, i)
+            float bot = array.get(bearBots, i)
+            if close > top
+                array.remove(bearTops, i)
+                array.remove(bearBots, i)
+                array.remove(bearScores, i)
+                array.remove(bearInZone, i)
+                array.remove(bearBars, i)
+            else if low <= top and high >= bot
+                if not array.get(bearInZone, i)
+                    array.set(bearInZone, i, true)
+                    if not obBearTouch or array.get(bearScores, i) > touchBearScore
+                        obBearTouch := true
+                        touchBearTop := top
+                        touchBearScore := array.get(bearScores, i)
+            else
+                array.set(bearInZone, i, false)
+
+// ───────────────────────── ۱-۲-۳ (همان State Machine اندیکاتور) ─────────────────────────
+var float bP1 = na
+var float bP2 = na
+var float bP3 = na
+var int bStage = 0
+var float sP1 = na
+var float sP2 = na
+var float sP3 = na
+var int sStage = 0
+bool bull123Evt = false
+bool bear123Evt = false
+if use123 and barstate.isconfirmed
+    if bStage == 0
+        if not na(pl)
+            bP1 := pl
+            bStage := 1
+    else if bStage == 1
+        if not na(ph) and ph > bP1
+            bP2 := ph
+            bStage := 2
+        else if not na(pl) and pl < bP1
+            bP1 := pl
+    else if bStage == 2
+        if not na(pl) and pl > bP1 and pl < bP2
+            bP3 := pl
+            bStage := 3
+        else if not na(ph) and ph > bP2
+            bP2 := ph
+        else if close < bP1
+            bStage := 5
+    else if bStage == 3
+        if close > bP2
+            bull123Evt := true
+            bStage := 4
+        else if close < bP1
+            bStage := 5
+    else if bStage == 4 or bStage == 5
+        bStage := 0
+        bP1 := na
+        bP2 := na
+        bP3 := na
+    if sStage == 0
+        if not na(ph)
+            sP1 := ph
+            sStage := 1
+    else if sStage == 1
+        if not na(pl) and pl < sP1
+            sP2 := pl
+            sStage := 2
+        else if not na(ph) and ph > sP1
+            sP1 := ph
+    else if sStage == 2
+        if not na(ph) and ph < sP1 and ph > sP2
+            sP3 := ph
+            sStage := 3
+        else if not na(pl) and pl < sP2
+            sP2 := pl
+        else if close > sP1
+            sStage := 5
+    else if sStage == 3
+        if close < sP2
+            bear123Evt := true
+            sStage := 4
+        else if close > sP1
+            sStage := 5
+    else if sStage == 4 or sStage == 5
+        sStage := 0
+        sP1 := na
+        sP2 := na
+        sP3 := na
+
+// ───────────────────────── ورود و خروج — حجم بر اساس ریسک ─────────────────────────
+bool longSignal = false
+bool shortSignal = false
+float entrySL = na
+if inRange and strategy.position_size == 0 and barstate.isconfirmed
+    if obBullTouch and touchBullScore >= minOBScore and htfTrendSafe >= 0
+        longSignal := true
+        entrySL := touchBullBot - atr * atrBuffer
+    else if obBearTouch and touchBearScore >= minOBScore and htfTrendSafe <= 0
+        shortSignal := true
+        entrySL := touchBearTop + atr * atrBuffer
+    else if use123 and bull123Evt and htfTrendSafe >= 0 and not na(bP3)
+        longSignal := true
+        entrySL := bP3 - atr * atrBuffer
+    else if use123 and bear123Evt and htfTrendSafe <= 0 and not na(sP3)
+        shortSignal := true
+        entrySL := sP3 + atr * atrBuffer
+
+if (longSignal or shortSignal) and not na(entrySL)
+    float riskAmt = math.abs(close - entrySL)
+    if riskAmt > 0
+        // حجم = (سرمایه × ریسک٪) ÷ فاصله تا حد ضرر — هر معامله دقیقاً riskPct٪ ریسک می‌کند.
+        // در ۴٫۲ حجم ثابت ۱۰٪ سرمایه بود و ریسک واقعی با فاصله حد ضرر عوض می‌شد.
+        float qty = strategy.equity * riskPct / 100.0 / riskAmt
+        if qty > 0
+            if longSignal
+                float tp1 = close + riskAmt * tp1RR
+                float tp2 = close + riskAmt * tp2RR
+                strategy.entry("Long", strategy.long, qty=qty, comment="Long OB/123")
+                strategy.exit("TP1", "Long", qty_percent=50, limit=tp1, stop=entrySL, comment="TP1")
+                strategy.exit("TP2/SL", "Long", limit=tp2, stop=entrySL, comment="TP2/SL")
+            if shortSignal
+                float tp1 = close - riskAmt * tp1RR
+                float tp2 = close - riskAmt * tp2RR
+                strategy.entry("Short", strategy.short, qty=qty, comment="Short OB/123")
+                strategy.exit("TP1", "Short", qty_percent=50, limit=tp1, stop=entrySL, comment="TP1")
+                strategy.exit("TP2/SL", "Short", limit=tp2, stop=entrySL, comment="TP2/SL")
+
+// ───────────────────────── شمارش زنده TP1 ─────────────────────────
+// خروج جزئی TP1 هیچ معامله بسته‌شده‌ای نمی‌سازد، پس در strategy.closedtrades دیده نمی‌شود.
+// تنها نشانه‌اش نصف‌شدن حجم پوزیشن باز است: وقتی حجم باز از کندل قبل کمتر شد ولی صفر
+// نشد، یعنی TP1 خورده است. در ۴٫۲ شمارش TP1 از کامنت خروج انجام می‌شد و همیشه صفر بود.
+var float prevPosSize = 0.0
+var int tp1HitsLive = 0
+// قدر مطلق: حجم فروش منفی است؛ بدون آن TP1 فروش‌ها هیچ‌وقت شمرده نمی‌شد.
+if prevPosSize != 0 and strategy.position_size != 0 and math.abs(strategy.position_size) < math.abs(prevPosSize)
+    tp1HitsLive += 1
+prevPosSize := strategy.position_size
+
+// ───────────────────────── آمار — محاسبه در آخرین کندل ─────────────────────────
+var table stats = table.new(position.top_right, 2, 11, border_width=1)
+var float peakEq = na
+var float maxDD = 0.0
+var float maxDDPct = 0.0
+float eq = strategy.equity
+if na(peakEq)
+    peakEq := eq
+if eq > peakEq
+    peakEq := eq
+if peakEq - eq > maxDD
+    maxDD := peakEq - eq
+    maxDDPct := peakEq > 0 ? (peakEq - eq) / peakEq * 100.0 : 0.0
+
+if barstate.islast
+    // در Pine v6 خودِ strategy.closedtrades تعداد معاملات بسته‌شده است (عدد صحیح).
+    // فراخوانی .size(...) در اینجا اشتباه بود: .size(شماره معامله) حجم آن معامله را
+    // برمی‌گرداند و نوعش اعشاری است — به همین دلیل کامپایلر خط ۳۲۸ را خطا می‌گرفت.
+    int n = strategy.closedtrades
+    int wins = 0
+    int tp2Hits = 0
+    int slHits = 0
+    float totProfit = 0.0
+    float grossWin = 0.0
+    float grossLoss = 0.0
+    if n > 0
+        for i = 0 to n - 1
+            float p = strategy.closedtrades.profit(i)
+            totProfit += p
+            if p > 0
+                wins += 1
+                grossWin += p
+            else
+                grossLoss += -p
+            // دسته‌بندی خروج نهایی با قیمت خروج در برابر قیمت ورود — نه با کامنت خروج.
+            // خروج نهایی هر معامله یا حد سود ۲ است یا حد ضرر؛ TP1 جزئی است و معامله را نمی‌بندد.
+            // جهت معامله از کامنت ورود خوانده می‌شود (مطمئن‌تر از علامت size).
+            float entryP = strategy.closedtrades.entry_price(i)
+            float exitP = strategy.closedtrades.exit_price(i)
+            string ec = strategy.closedtrades.entry_comment(i)
+            if not na(entryP) and not na(exitP) and not na(ec)
+                bool isLong = str.startswith(ec, "Long")
+                if isLong
+                    if exitP > entryP
+                        tp2Hits += 1
+                    else if exitP < entryP
+                        slHits += 1
+                else
+                    if exitP < entryP
+                        tp2Hits += 1
+                    else if exitP > entryP
+                        slHits += 1
+    float winRate = n > 0 ? wins / n * 100.0 : 0.0
+    float pf = grossLoss > 0 ? grossWin / grossLoss : na
+    float avgProfit = n > 0 ? totProfit / n : 0.0
+    table.cell(stats, 0, 0, "پیپ ۴٫۴ — بک‌تست طلا", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(stats, 1, 0, "دمو — نه تضمین سود", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(stats, 0, 1, "تعداد معاملات", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 1, str.tostring(n), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 2, "Win Rate", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 2, str.tostring(winRate, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 3, "Profit Factor", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 3, na(pf) ? "—" : str.tostring(pf, "#.##"), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 4, "حداکثر افت سرمایه", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 4, str.tostring(maxDD, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 5, "حداکثر افت (٪)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 5, str.tostring(maxDDPct, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 6, "سود خالص", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 6, str.tostring(totProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 7, "TP1 (نیمه‌خروج)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 7, str.tostring(tp1HitsLive), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 8, "TP2", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 8, str.tostring(tp2Hits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 9, "SL", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 9, str.tostring(slHits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 10, "میانگین سود هر معامله", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 10, str.tostring(avgProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+
+plot(emaFast, "EMA سریع", color=color.new(color.blue, 0))
+plot(emaSlow, "EMA کند", color=color.new(color.orange, 0))

@@ -1,0 +1,150 @@
+if (not showFVG or not showL2) and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        if not na(z.b)
+            box.delete(z.b)
+            z.b := na
+if (showFVG and showL2) and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        if na(z.b) and not z.invalid
+            z.b := box.new(z.bar, z.top, bar_index + fvgExtend, z.bottom, bgcolor=z.dir == 1 ? color.new(color.aqua, 86) : color.new(color.fuchsia, 86), border_color=z.dir == 1 ? color.new(color.aqua, 0) : color.new(color.fuchsia, 0))
+
+// ───────────────────────── اردر بلاک — یک موتور برای نمایش و بک‌تست ─────────────────────────
+// ساخت FVGها در بخش قبل انجام می‌شود، پس هم‌پوشانی FVG همان کندل در امتیاز OB
+// دیده می‌شود (اصلاح M-6).
+bool obBullTouchEvt = false
+bool obBearTouchEvt = false
+int touchBullId = na
+float touchBullTop = na
+float touchBullBot = na
+float touchBullScore = na
+int touchBearId = na
+float touchBearTop = na
+float touchBearBot = na
+float touchBearScore = na
+
+bullDisp = atrOk and close > open and (close - open) > atr * effObDispATR and close > high[1]
+bearDisp = atrOk and close < open and (open - close) > atr * effObDispATR and close < low[1]
+// ساخت OB دیگر با جهت HTF گیت نمی‌شود (تغییر مستند نسبت به ۵٫۲): ناحیه‌ها اشیای
+// ساختاری‌اند و در هر جهت ساخته می‌شوند؛ هم‌راستایی جهت در امتیاز (f_dirPts) و
+// در ورود (گیت G1 با جهت MTF) اعمال می‌شود.
+
+// امتیاز OB: جهت MTF هم‌راستا ۲۵ / خنثی ۱۰ / مخالف ۰، قدرت جابه‌جایی تا ۲۰، تأیید ساختار ۱۵،
+// جاروی نقدینگی ۱۰، هم‌پوشانی FVG «هم‌جهت» ۱۵، سشن ۵ — پایه حداکثر ۹۰.
+// تازگی (تا ۱۰) جدا حساب می‌شود و با گذشت زمان کم می‌شود؛ امتیاز نهایی حداکثر ۱۰۰ است.
+// تغییر نسبت به ۵٫۱ (مستند): HTF خنثی قبلاً ۲۵ می‌گرفت، حالا ۱۰ می‌گیرد، چون خنثی
+// هم‌راستایی کامل نیست. امتیاز احتمال موفقیت معامله نیست؛ فقط کیفیت نسبی ناحیه را نشان می‌دهد.
+f_obScore(float disp, int htfPts, bool structOk, bool sweepOk, bool fvgOk, float atrVal, float sessBonus) =>
+    float s = 0.0
+    s := s + htfPts
+    s := s + math.min(disp / atrVal, 3.0) / 3.0 * 20.0
+    s := s + (structOk ? 15.0 : 0.0)
+    s := s + (sweepOk ? 10.0 : 0.0)
+    s := s + (fvgOk ? 15.0 : 0.0)
+    s := s + sessBonus
+    math.min(s, 90.0)
+
+// تازگی: در لحظه ساخت ناحیه ۱۰ است و با رسیدن سن ناحیه به effObExpBars خطی به صفر می‌رسد.
+// سن از کندلِ ناحیه (نه کندل ساخت) حساب می‌شود.
+f_freshScore(int ageBars, int maxAgeBars) =>
+    10.0 * math.max(0.0, 1.0 - ageBars / maxAgeBars)
+
+// بازمحاسبه زنده امتیاز پایه OB (L-13): اجزای ساختاری امتیاز (ساختار/جارو/FVG)
+// فقط در لحظه ساخت ثابت نمی‌مانند؛ در هر کندل تأییدشده با رویدادهای تازه دوباره
+// حساب می‌شوند. تازگی جدا و خطی کم می‌شود (در حلقه به‌روزرسانی OB).
+f_obScoreLive(OBZone z) =>
+    int dirPts = f_dirPts(z.dir)
+    bool structOk = z.dir == 1 ? structUpRecent : structDnRecent
+    bool sweepOk = z.dir == 1 ? sweepDnRecent : sweepUpRecent
+    bool fvgOk = false
+    if array.size(fvgZones) > 0
+        for i = 0 to array.size(fvgZones) - 1
+            FVGZone fz = array.get(fvgZones, i)
+            if not fz.obInvalid and (not effFvgDirOnly or fz.dir == z.dir) and f_overlap(z.bottom, z.top, fz.bottom, fz.top)
+                fvgOk := true
+    f_obScore(z.disp, dirPts, structOk, sweepOk, fvgOk, atr, sessScoreBonus)
+
+// ساخت ناحیه همیشه انجام می‌شود؛ باکس فقط وقتی ساخته می‌شود که نمایش OB روشن باشد.
+// اگر نمایش خاموش باشد، ناحیه بدون باکس (b = na) نگه داشته می‌شود تا بک‌تست کار کند.
+if bullDisp and barstate.isconfirmed
+    int bi = f_lastOpp(1, effObLookback)
+    if not na(bi)
+        bool dup = false
+        if array.size(obZones) > 0
+            for i = 0 to array.size(obZones) - 1
+                OBZone z = array.get(obZones, i)
+                if z.bar == bar_index - bi
+                    dup := true
+        if not dup
+            float top = high[bi]
+            float bot = low[bi]
+            bool fvgConf = false
+            if array.size(fvgZones) > 0
+                for i = 0 to array.size(fvgZones) - 1
+                    FVGZone fz = array.get(fvgZones, i)
+                    // هم‌پوشانی FVG فقط وقتی حساب می‌شود که گپ نامعتبر نباشد و (در صورت
+                    // فعال‌بودن فیلتر پروفایل) جهت گپ هم با OB هم‌راستا باشد.
+                    if not fz.obInvalid and (not effFvgDirOnly or fz.dir == 1) and f_overlap(bot, top, fz.bottom, fz.top)
+                        fvgConf := true
+            float sc = f_obScore(close - open, f_dirPts(1), structUpRecent, sweepDnRecent, fvgConf, atr, sessScoreBonus)
+            box b = na
+            if showOB and showL1
+                b := box.new(bar_index - bi, top, bar_index + obExtend, bot, bgcolor=color.new(color.green, 82), border_color=color.new(color.green, 0), border_width=1)
+            // score و baseScore در لحظه ساخت برابرند؛ تازگی در حلقه به‌روزرسانی اضافه می‌شود.
+            OBZone nz = OBZone.new(b, top, bot, 1, obNextId, close - open, sc, sc, false, false, false, false, bar_index - bi, na)
+            obNextId += 1
+            array.push(obZones, nz)
+            // ارتباط FVGهای هم‌پوشان موجود با این OB تازه (برای FVGهایی که قبل از
+            // این OB ساخته شده‌اند — FVGهایی که بعد ساخته می‌شوند خودشان لینک می‌کنند).
+            if array.size(fvgZones) > 0
+                for i = 0 to array.size(fvgZones) - 1
+                    FVGZone fz = array.get(fvgZones, i)
+                    if na(fz.obId) and fz.dir == 1 and f_overlap(bot, top, fz.bottom, fz.top)
+                        fz.obId := nz.id
+            while array.size(obZones) > obMaxTotal
+                OBZone old = array.shift(obZones)
+                if not na(old.b)
+                    box.delete(old.b)
+
+if bearDisp and barstate.isconfirmed
+    int bi = f_lastOpp(-1, effObLookback)
+    if not na(bi)
+        bool dup = false
+        if array.size(obZones) > 0
+            for i = 0 to array.size(obZones) - 1
+                OBZone z = array.get(obZones, i)
+                if z.bar == bar_index - bi
+                    dup := true
+        if not dup
+            float top = high[bi]
+            float bot = low[bi]
+            bool fvgConf = false
+            if array.size(fvgZones) > 0
+                for i = 0 to array.size(fvgZones) - 1
+                    FVGZone fz = array.get(fvgZones, i)
+                    // هم‌پوشانی FVG فقط وقتی حساب می‌شود که گپ نامعتبر نباشد و (در صورت
+                    // فعال‌بودن فیلتر پروفایل) جهت گپ هم با OB هم‌راستا باشد.
+                    if not fz.obInvalid and (not effFvgDirOnly or fz.dir == -1) and f_overlap(bot, top, fz.bottom, fz.top)
+                        fvgConf := true
+            float sc = f_obScore(open - close, f_dirPts(-1), structDnRecent, sweepUpRecent, fvgConf, atr, sessScoreBonus)
+            box b = na
+            if showOB and showL1
+                b := box.new(bar_index - bi, top, bar_index + obExtend, bot, bgcolor=color.new(color.red, 82), border_color=color.new(color.red, 0), border_width=1)
+            // score و baseScore در لحظه ساخت برابرند؛ تازگی در حلقه به‌روزرسانی اضافه می‌شود.
+            OBZone nz = OBZone.new(b, top, bot, -1, obNextId, open - close, sc, sc, false, false, false, false, bar_index - bi, na)
+            obNextId += 1
+            array.push(obZones, nz)
+            // ارتباط FVGهای هم‌پوشان موجود با این OB تازه.
+            if array.size(fvgZones) > 0
+                for i = 0 to array.size(fvgZones) - 1
+                    FVGZone fz = array.get(fvgZones, i)
+                    if na(fz.obId) and fz.dir == -1 and f_overlap(bot, top, fz.bottom, fz.top)
+                        fz.obId := nz.id
+            while array.size(obZones) > obMaxTotal
+                OBZone old = array.shift(obZones)
+                if not na(old.b)
+                    box.delete(old.b)
+
+// انقضای OB بر اساس سن — جدا از حلقه به‌روزرسانی، تا ساختار آن دست نخورد.
+// تمدید باکس (obExtend) فقط لبه راست باکس را جلو می‌برد و عمر ناحیه را بیشتر نمی‌کند.

@@ -1,0 +1,278 @@
+//@version=6
+// پیپ نسخه ۴٫۰ — بک‌تست — فقط TradingView — Pine Script v6
+// استراتژی جدا از اندیکاتور. منطق ورود/خروج دقیقاً با اندیکاتور v4 هماهنگ است:
+// ورود = لمس اردر بلاک در جهت روند HTF (امتیاز ساده‌شده ≥ ۵۵) یا تأیید ۱-۲-۳.
+// حد ضرر = کف/سقف ناحیه ± ATR × بافر. حد سود ۱ = ۱:۲ (۵۰٪ حجم)، حد سود ۲ = ۱:۳ (باقی‌مانده).
+// همه ورودها روی کندل تأییدشده (barstate.isconfirmed) و با process_orders_on_close=true
+// ثبت می‌شوند تا Repaint نداشته باشند. HTF فقط از کندل تأییدشده قبلی خوانده می‌شود.
+//
+// هشدار مهم: آمار بک‌تست تضمین عملکرد آینده نیست. اسپرد، کمیسیون و لغزش قیمت
+// در بک‌تست تقریبی‌اند و در بازار واقعی متفاوت‌اند. فقط روی دمو تست کن.
+
+strategy("پیپ ۴٫۰ — بک‌تست طلا", shorttitle="پیپ ۴٫۰ بک‌تست", overlay=true,
+     initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10,
+     currency=currency.USD, pyramiding=0, process_orders_on_close=true,
+     commission_type=strategy.commission.percent, commission_value=0.02, slippage=2,
+     max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ───────────────────────── ورودی‌ها ─────────────────────────
+emaFastLen = input.int(50, "میانگین سریع", minval=5, maxval=200)
+emaSlowLen = input.int(200, "میانگین کند", minval=20, maxval=400)
+htfTF      = input.timeframe("60", "تایم‌فریم بالاتر")
+obDispATR  = input.float(1.0, "حداقل جابه‌جایی OB (برابر ATR)", minval=0.3, maxval=3.0, step=0.1)
+minOBScore = input.int(55, "حداقل امتیاز OB برای ورود", minval=0, maxval=100)
+atrBuffer  = input.float(0.2, "فاصله حد ضرر از ناحیه (برابر ATR)", minval=0.0, maxval=1.0, step=0.05)
+tp1RR      = input.float(2.0, "نسبت حد سود ۱", minval=0.5, maxval=5.0, step=0.5)
+tp2RR      = input.float(3.0, "نسبت حد سود ۲", minval=1.0, maxval=6.0, step=0.5)
+// کمیسیون (۰٫۰۲٪) و لغزش (۲ تیک) مستقیم در فراخوانی strategy() ست شده‌اند؛
+// برای تغییر آن‌ها، همان دو عدد را در خط strategy() عوض کن.
+use123     = input.bool(true, "ورود با تأیید ۱-۲-۳ هم فعال باشد")
+startDate  = input.time(timestamp("2024-01-01"), "شروع بک‌تست")
+endDate    = input.time(timestamp("2026-11-10"), "پایان بک‌تست")
+
+// ───────────────────────── هسته ─────────────────────────
+atr     = ta.atr(14)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+trendUp   = close > emaFast and emaFast > emaSlow
+trendDown = close < emaFast and emaFast < emaSlow
+
+[htfClose, htfEmaF, htfEmaS] = request.security(syminfo.tickerid, htfTF, [close[1], ta.ema(close, emaFastLen)[1], ta.ema(close, emaSlowLen)[1]], lookahead=barmerge.lookahead_on)
+htfTrend = htfClose > htfEmaF and htfEmaF > htfEmaS ? 1 : htfClose < htfEmaF and htfEmaF < htfEmaS ? -1 : 0
+inRange = time >= startDate and time <= endDate
+
+ph = ta.pivothigh(high, 2, 2)
+pl = ta.pivotlow(low, 2, 2)
+var float lastPh = na
+var float lastPl = na
+if not na(ph)
+    lastPh := ph
+if not na(pl)
+    lastPl := pl
+
+// ───────────────────────── اردر بلاک (ساده‌شده، بدون باکس) ─────────────────────────
+f_lastOpp(int dir, int n) =>
+    int idx = na
+    for i = 1 to n
+        if na(idx) and dir == 1 and close[i] < open[i]
+            idx := i
+        if na(idx) and dir == -1 and close[i] > open[i]
+            idx := i
+    idx
+
+var float bullOBTop = na
+var float bullOBBot = na
+var float bearOBTop = na
+var float bearOBBot = na
+var bool bullOBActive = false
+var bool bearOBActive = false
+var bool bullInZone = false
+var bool bearInZone = false
+var float bullOBScore = na
+var float bearOBScore = na
+
+bullDisp = close > open and (close - open) > atr * obDispATR and close > high[1]
+bearDisp = close < open and (open - close) > atr * obDispATR and close < low[1]
+if bullDisp and htfTrend >= 0 and barstate.isconfirmed
+    int bi = f_lastOpp(1, 20)
+    if not na(bi)
+        bullOBTop := high[bi]
+        bullOBBot := low[bi]
+        bullOBActive := true
+        bullInZone := false
+        bullOBScore := 25.0 + math.min((close - open) / atr, 3.0) / 3.0 * 20.0 + 10.0
+if bearDisp and htfTrend <= 0 and barstate.isconfirmed
+    int bi = f_lastOpp(-1, 20)
+    if not na(bi)
+        bearOBTop := high[bi]
+        bearOBBot := low[bi]
+        bearOBActive := true
+        bearInZone := false
+        bearOBScore := 25.0 + math.min((open - close) / atr, 3.0) / 3.0 * 20.0 + 10.0
+
+if bullOBActive and close < bullOBBot
+    bullOBActive := false
+if bearOBActive and close > bearOBTop
+    bearOBActive := false
+
+bool obBullTouch = false
+bool obBearTouch = false
+if bullOBActive and barstate.isconfirmed
+    bool overlap = low <= bullOBTop and high >= bullOBBot
+    if overlap and not bullInZone
+        bullInZone := true
+        obBullTouch := true
+    if not overlap
+        bullInZone := false
+if bearOBActive and barstate.isconfirmed
+    bool overlap = low <= bearOBTop and high >= bearOBBot
+    if overlap and not bearInZone
+        bearInZone := true
+        obBearTouch := true
+    if not overlap
+        bearInZone := false
+
+// ───────────────────────── ۱-۲-۳ (همان State Machine اندیکاتور) ─────────────────────────
+var float bP1 = na
+var float bP2 = na
+var float bP3 = na
+var int bStage = 0
+var float sP1 = na
+var float sP2 = na
+var float sP3 = na
+var int sStage = 0
+bool bull123Evt = false
+bool bear123Evt = false
+if barstate.isconfirmed
+    if bStage == 0
+        if not na(pl)
+            bP1 := pl
+            bStage := 1
+    else if bStage == 1
+        if not na(ph) and ph > bP1
+            bP2 := ph
+            bStage := 2
+        else if not na(pl) and pl < bP1
+            bP1 := pl
+    else if bStage == 2
+        if not na(pl) and pl > bP1 and pl < bP2
+            bP3 := pl
+            bStage := 3
+        else if not na(ph) and ph > bP2
+            bP2 := ph
+        else if close < bP1
+            bStage := 5
+    else if bStage == 3
+        if close > bP2
+            bull123Evt := true
+            bStage := 4
+        else if close < bP1
+            bStage := 5
+    else if bStage == 4 or bStage == 5
+        bStage := 0
+        bP1 := na
+        bP2 := na
+        bP3 := na
+    if sStage == 0
+        if not na(ph)
+            sP1 := ph
+            sStage := 1
+    else if sStage == 1
+        if not na(pl) and pl < sP1
+            sP2 := pl
+            sStage := 2
+        else if not na(ph) and ph > sP1
+            sP1 := ph
+    else if sStage == 2
+        if not na(ph) and ph < sP1 and ph > sP2
+            sP3 := ph
+            sStage := 3
+        else if not na(pl) and pl < sP2
+            sP2 := pl
+        else if close > sP1
+            sStage := 5
+    else if sStage == 3
+        if close < sP2
+            bear123Evt := true
+            sStage := 4
+        else if close > sP1
+            sStage := 5
+    else if sStage == 4 or sStage == 5
+        sStage := 0
+        sP1 := na
+        sP2 := na
+        sP3 := na
+
+// ───────────────────────── ورود و خروج ─────────────────────────
+bool longSignal = false
+bool shortSignal = false
+float entrySL = na
+if inRange and strategy.position_size == 0 and barstate.isconfirmed
+    if obBullTouch and bullOBScore >= minOBScore and htfTrend >= 0
+        longSignal := true
+        entrySL := bullOBBot - atr * atrBuffer
+    else if obBearTouch and bearOBScore >= minOBScore and htfTrend <= 0
+        shortSignal := true
+        entrySL := bearOBTop + atr * atrBuffer
+    else if use123 and bull123Evt and htfTrend >= 0
+        longSignal := true
+        entrySL := bP3 - atr * atrBuffer
+    else if use123 and bear123Evt and htfTrend <= 0
+        shortSignal := true
+        entrySL := sP3 + atr * atrBuffer
+
+if longSignal and not na(entrySL)
+    float riskAmt = math.abs(close - entrySL)
+    float tp1 = close + riskAmt * tp1RR
+    float tp2 = close + riskAmt * tp2RR
+    strategy.entry("Long", strategy.long, comment="Long OB/123")
+    strategy.exit("TP1", "Long", qty_percent=50, limit=tp1, stop=entrySL, comment="TP1")
+    strategy.exit("TP2/SL", "Long", limit=tp2, stop=entrySL, comment="TP2/SL")
+if shortSignal and not na(entrySL)
+    float riskAmt = math.abs(close - entrySL)
+    float tp1 = close - riskAmt * tp1RR
+    float tp2 = close - riskAmt * tp2RR
+    strategy.entry("Short", strategy.short, comment="Short OB/123")
+    strategy.exit("TP1", "Short", qty_percent=50, limit=tp1, stop=entrySL, comment="TP1")
+    strategy.exit("TP2/SL", "Short", limit=tp2, stop=entrySL, comment="TP2/SL")
+
+// ───────────────────────── آمار — محاسبه در آخرین کندل ─────────────────────────
+var table stats = table.new(position.top_right, 2, 10, border_width=1)
+var float peakEq = na
+var float maxDD = 0.0
+float eq = strategy.equity
+if na(peakEq)
+    peakEq := eq
+peakEq := math.max(peakEq, eq)
+maxDD := math.max(maxDD, peakEq - eq)
+
+if barstate.islast
+    int n = strategy.closedtrades.size(strategy.closedtrades)
+    int wins = 0
+    int tp1Hits = 0
+    int tp2Hits = 0
+    int slHits = 0
+    float totProfit = 0.0
+    float grossWin = 0.0
+    float grossLoss = 0.0
+    for i = 0 to n - 1
+        float p = strategy.closedtrades.profit(i)
+        totProfit += p
+        if p > 0
+            wins += 1
+            grossWin += p
+        else
+            grossLoss += -p
+        string c = strategy.closedtrades.exit_comment(i)
+        if c == "TP1"
+            tp1Hits += 1
+        else if c == "TP2/SL" and p > 0
+            tp2Hits += 1
+        else if c == "TP2/SL" and p <= 0
+            slHits += 1
+    float winRate = n > 0 ? wins / n * 100.0 : 0.0
+    float pf = grossLoss > 0 ? grossWin / grossLoss : na
+    float avgR = n > 0 ? totProfit / n : 0.0
+    table.cell(stats, 0, 0, "پیپ ۴٫۰ — بک‌تست طلا", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(stats, 1, 0, "دمو — نه تضمین سود", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(stats, 0, 1, "تعداد معاملات", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 1, str.tostring(n), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 2, "Win Rate", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 2, str.tostring(winRate, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 3, "Profit Factor", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 3, na(pf) ? "—" : str.tostring(pf, "#.##"), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 4, "حداکثر افت سرمایه", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 4, str.tostring(maxDD, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 5, "سود خالص", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 5, str.tostring(totProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 6, "TP1", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 6, str.tostring(tp1Hits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 7, "TP2", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 7, str.tostring(tp2Hits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 8, "SL", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 8, str.tostring(slHits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 9, "میانگین سود هر معامله", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 9, str.tostring(avgR, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+
+plot(emaFast, "EMA سریع", color=color.new(color.blue, 0))
+plot(emaSlow, "EMA کند", color=color.new(color.orange, 0))

@@ -1,0 +1,150 @@
+//@version=6
+// پیپ نسخه ۵٫۲ — یکپارچه: اندیکاتور + بک‌تست در یک فایل — فقط TradingView — Pine Script v6
+// نسخه ۵٫۲: بازبینی حرفه‌ای کامل ۵٫۱ — معماری خروج TP1/TP2/SL بازسازی شد، حجم بر اساس
+// مشخصات قرارداد نماد (pointvalue) محاسبه می‌شود، ستاپ در انتظار از معامله باز جدا شد،
+// پرچم، ۱-۲-۳، فیلتر HTF، امتیازدهی OB و چرخه عمر OB/FVG اصلاح شدند، ۱۴ هشدار alertcondition
+// با فراخوانی alert() جایگزین شد، آمار بک‌تست بازسازی شد و کنترل‌های ریسک اضافه شد
+// (گزارش کامل: PIP_V5_2_CHANGELOG_FA.md و PIP_V5_2_QA_FA.md).
+// ساخته‌شده از ادغام «اندیکاتور ۴٫۲» و «بک‌تست ۴٫۴» در یک اسکریپت استراتژی.
+// دلیل ادغام: پلن Basic تریدینگ‌ویو فقط ۱ اسکریپت ذخیره‌شده می‌دهد؛ این فایل تنها
+// با همان یک اسلات، هم همه‌چیز اندیکاتور را روی چارت می‌کشد (OB، FVG، BOS/CHoCH،
+// Sweep، ۱-۲-۳، پرچم، سشن‌ها، داشبورد، هشدارها) و هم بک‌تست می‌گیرد (Strategy Tester).
+// مخصوص طلا (XAUUSD). ابزار آموزشی است — سیگنال خرید و فروش نیست. اول روی دمو تست کن.
+// تایم‌فریم پیشنهادی: H1 برای روند، M15 برای ورود.
+//
+// اصل طراحی: فقط «یک» موتور OB / FVG / ۱-۲-۳ وجود دارد. همان لمس اردر بلاکی که خطوط
+// ورود/حد ضرر/حد سود را روی چارت می‌کشد، معامله بک‌تست را هم باز می‌کند؛ پس چیزی که
+// می‌بینی دقیقاً همان چیزی است که بک‌تست گرفته است. ورودی useBacktest را خاموش کنی،
+// فایل مثل یک اندیکاتور خالص عمل می‌کند (بدون معامله).
+//
+// تفاوت‌های عمدی نسبت به ۴٫۲ و ۴٫۴ (جزئیات کامل: PIP_V5_0_MERGE_FA.md):
+//  - لایه‌ها (L1/L2/L3) و نمایش‌ها فقط «دیدن» را کنترل می‌کنند، نه موتور را؛
+//    پس خاموش‌کردن یک لایه، سیگنال‌ها و معاملات بک‌تست را عوض نمی‌کند.
+//  - لمس OB و به‌روزرسانی FVG فقط روی کندل تأییدشده ثبت می‌شوند (مثل بک‌تست ۴٫۴)؛
+//    در ۴٫۲ این‌ها وسط کندل هم ثبت می‌شدند.
+//  - ستاپ ریسک و ورود بک‌تست هر دو فقط وقتی ساخته می‌شوند که امتیاز OB حداقل
+//    minOBScore باشد و روند HTF هم‌راستا باشد.
+//  - ستاپ در انتظار و معامله باز دو حالت جداگانه‌اند: وقتی معامله‌ای باز است، خطوط
+//    ریسک روی چارت حد ضرر/حد سود «قفل‌شده» همان معامله را نشان می‌دهند و ستاپ جدید
+//    هرگز آن‌ها را عوض نمی‌کند؛ ستاپ جدید فقط بعد از بسته‌شدن معامله وارد می‌شود.
+//  - خروج‌ها: TP1 دقیقاً ۵۰٪، TP2 بقیه ۵۰٪، هر دو با حد ضرر محافظ؛ دسته‌بندی آمار
+//    با کامنت خروج (comment_profit/comment_loss) انجام می‌شود.
+//  - جدول آمار بک‌تست پایین-راست چارت است؛ داشبورد اندیکاتور بالا-راست (قابل تنظیم).
+//
+// هشدار مهم: آمار بک‌تست تضمین عملکرد آینده نیست. اسپرد، کمیسیون و لغزش قیمت
+// در بک‌تست تقریبی‌اند و در بازار واقعی متفاوت‌اند. فقط روی دمو تست کن.
+
+strategy("پیپ نسخه ۵٫۲ — فرکتال / اردر بلاک / گپ / پرچم + بک‌تست | طلا", shorttitle="پیپ ۵٫۲", overlay=true,
+     initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10,
+     currency=currency.USD, pyramiding=0, process_orders_on_close=true,
+     commission_type=strategy.commission.percent, commission_value=0.02, slippage=2,
+     max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ───────────────────────── ورودی‌ها ─────────────────────────
+grpTrend  = "روند و تایم بالاتر"
+grpFrac   = "فرکتال"
+grpOB     = "اردر بلاک (طلا)"
+grpFVG    = "گپ ارزش منصفانه"
+grp123    = "الگوی ۱-۲-۳"
+grpFlag   = "پرچم (آزمایشی)"
+grpSess   = "سشن‌ها"
+grpRisk   = "مدیریت ریسک"
+grpSize   = "حجم و مارجین (بر اساس قرارداد نماد)"
+grpRiskCtl = "کنترل‌های ریسک (همه پیش‌فرض خاموش‌اند)"
+grpBT     = "بک‌تست (استراتژی)"
+grpUI     = "رابط کاربری و لایه‌ها"
+grpAlert  = "هشدارها"
+
+// روند
+emaFastLen = input.int(50, "میانگین سریع", minval=5, maxval=200, group=grpTrend)
+emaSlowLen = input.int(200, "میانگین کند", minval=20, maxval=400, group=grpTrend)
+htfTF      = input.timeframe("60", "تایم‌فریم بالاتر", group=grpTrend)
+obOnlyHTF  = input.bool(true, "اردر بلاک فقط در جهت روند تایم بالاتر", group=grpTrend)
+htfFallback = input.bool(true, "اگر HTF نامعتبر است، از روند چارت استفاده کن", group=grpTrend, tooltip="وقتی تایم‌فریم چارت از HTF بزرگ‌تر است، HTF نامعتبر است. اگر این گزینه روشن باشد، روند چارت جای HTF می‌نشیند (در داشبورد «نامعتبر — روند چارت» نشان داده می‌شود). اگر خاموش باشد، HTF خنثی فرض می‌شود و هیچ ورودی هم‌راستا با HTF پیدا نمی‌شود، پس معامله‌ای باز نمی‌شود.")
+
+// فرکتال
+showFractal = input.bool(true, "نمایش فرکتال", group=grpFrac)
+fractalLen  = input.int(2, "تعداد کندل هر طرف فرکتال", minval=1, maxval=5, group=grpFrac)
+
+// اردر بلاک
+showOB      = input.bool(true, "نمایش اردر بلاک", group=grpOB)
+obLookback  = input.int(20, "بازگشت جستجوی کندل مخالف (کندل)", minval=5, maxval=50, group=grpOB)
+obDispATR   = input.float(1.0, "حداقل جابه‌جایی (برابر ATR 14)", minval=0.3, maxval=3.0, step=0.1, group=grpOB)
+obMaxTotal  = input.int(6, "حداکثر باکس اردر بلاک در مجموع (هر دو جهت)", minval=2, maxval=12, group=grpOB)
+obExtend    = input.int(30, "تمدید باکس (کندل)", minval=5, maxval=100, group=grpOB)
+minOBScore  = input.int(55, "حداقل امتیاز OB برای ستاپ و ورود (۰ تا ۱۰۰)", minval=0, maxval=100, group=grpOB)
+showOBScore = input.bool(true, "نمایش امتیاز روی اردر بلاک", group=grpOB)
+structLookback = input.int(5, "مهلت تأیید ساختار برای امتیاز OB (کندل)", minval=1, maxval=20, group=grpOB, tooltip="BOS یا CHoCH تا این‌قدر کندل قبل از ساخت OB هم برای امتیاز ساختار حساب می‌شود؛ فقط رویداد همان کندل حساب نمی‌شود.")
+sweepLookback  = input.int(5, "مهلت جاروی نقدینگی برای امتیاز OB (کندل)", minval=1, maxval=20, group=grpOB, tooltip="جاروی نقدینگی تا این‌قدر کندل قبل از ساخت OB هم برای امتیاز جارو حساب می‌شود.")
+obMaxAge       = input.int(200, "حداکثر عمر اردر بلاک (کندل)", minval=20, maxval=500, group=grpOB, tooltip="اردر بلاکی که این‌قدر کندل از ساختش گذشته باشد، به‌صورت خودکار حذف می‌شود؛ تمدید باکس (obExtend) عمر ناحیه را بیشتر نمی‌کند.")
+obFirstTouchOnly = input.bool(false, "فقط اولین لمس OB ستاپ بسازد", group=grpOB, tooltip="روشن باشد: بعد از اولین لمس یک اردر بلاک، لمس‌های بعدی آن ناحیه دیگر ستاپ نمی‌سازند. خاموش باشد: هر بار که قیمت وارد ناحیه شود و دوباره بیرون برود، لمس دوباره حساب می‌شود (حالت Retest).")
+
+// گپ ارزش منصفانه
+showFVG     = input.bool(true, "نمایش گپ ارزش منصفانه", group=grpFVG)
+fvgMaxTotal = input.int(6, "حداکثر باکس گپ در مجموع (هر دو جهت)", minval=2, maxval=12, group=grpFVG)
+showFVGFil  = input.bool(true, "نمایش درصد پرشدگی گپ", group=grpFVG)
+fvgMaxAge     = input.int(200, "حداکثر عمر گپ (کندل)", minval=20, maxval=500, group=grpFVG, tooltip="گپی که این‌قدر کندل از ساختش گذشته باشد، به‌صورت خودکار حذف می‌شود.")
+fvgExtend     = input.int(30, "تمدید باکس گپ (کندل)", minval=5, maxval=100, group=grpFVG, tooltip="تمدید باکس گپ جدا از تمدید باکس اردر بلاک است و عمر گپ را بیشتر نمی‌کند.")
+
+// ۱-۲-۳ و پرچم
+show123     = input.bool(true, "الگوی ۱-۲-۳ فعال باشد (نمایش + ورود بک‌تست)", group=grp123)
+max123Age   = input.int(30, "حداکثر عمر الگوی ۱-۲-۳ (کندل)", minval=5, maxval=100, group=grp123, tooltip="اگر از ساخت نقطه ۱ تا شکست نقطه ۲ بیش از این‌قدر کندل بگذرد، الگو باطل می‌شود و از اول ساخته می‌شود.")
+showFlag    = input.bool(true, "نمایش پرچم (آزمایشی)", group=grpFlag)
+flagPoleATR = input.float(1.5, "حداقل حرکت میله پرچم (برابر ATR)", minval=0.5, maxval=4.0, step=0.1, group=grpFlag)
+flagMaxRet  = input.float(0.5, "حداکثر اصلاح نسبت به میله", minval=0.2, maxval=0.8, step=0.05, group=grpFlag)
+
+// سشن‌ها — این ورودی‌ها فقط پس‌زمینه سشن را کنترل می‌کنند؛ امتیاز OB همیشه
+// با سشن‌های واقعی حساب می‌شود، حتی اگر پس‌زمینه یک سشن خاموش باشد.
+showSessBG  = input.bool(false, "نمایش پس‌زمینه سشن (پیش‌فرض خاموش)", group=grpSess)
+showAsia    = input.bool(true, "پس‌زمینه سشن آسیا", group=grpSess)
+showLondon  = input.bool(true, "پس‌زمینه سشن لندن", group=grpSess)
+showNY      = input.bool(true, "پس‌زمینه سشن نیویورک", group=grpSess)
+showKillZone = input.bool(true, "پس‌زمینه Kill Zone لندن / نیویورک", group=grpSess)
+showSessHL  = input.bool(false, "نمایش سقف / کف سشن جاری", group=grpSess)
+
+// ریسک
+showRisk   = input.bool(true, "نمایش ورود / حد ضرر / حد سود آخرین ستاپ", group=grpRisk)
+atrBuffer  = input.float(0.2, "فاصله حد ضرر از ناحیه (برابر ATR)", minval=0.0, maxval=1.0, step=0.05, group=grpRisk)
+tp1RR      = input.float(2.0, "نسبت حد سود ۱", minval=0.5, maxval=5.0, step=0.5, group=grpRisk)
+tp2RR      = input.float(3.0, "نسبت حد سود ۲", minval=1.0, maxval=6.0, step=0.5, group=grpRisk)
+
+// حجم و مارجین — حجم از ریسک دلاری تقسیم بر (فاصله حد ضرر × ارزش یک واحد قیمت) حساب
+// می‌شود؛ ارزش یک واحد قیمت از syminfo.pointvalue خوانده می‌شود، پس با هر فید
+// XAUUSD (اونس، قرارداد ۱۰۰ اونسی و...) درست کار می‌کند. پیش‌فرض‌ها طوری‌اند که
+// برای OANDA:XAUUSD رفتار پیش‌فرض مثل ۵٫۱ بماند (pointvalue=۱).
+qtyStep    = input.float(0.01, "گام حجم (حداقل افزایش حجم)", minval=0.001, maxval=1.0, step=0.001, group=grpSize, tooltip="حجم به پایین‌ترین مضرب این گام گرد می‌شود؛ گام کارگزار خودت را بگذار (مثلاً ۰٫۰۱).")
+minQty     = input.float(0.01, "حداقل حجم", minval=0.001, maxval=1.0, step=0.001, group=grpSize, tooltip="اگر حجم محاسبه‌شده کمتر از این باشد، معامله باز نمی‌شود.")
+maxQty     = input.float(100.0, "حداکثر حجم", minval=0.1, maxval=1000.0, step=1.0, group=grpSize)
+maxNotional = input.float(1000000.0, "حداکثر ارزش اسمی معامله (دلار)", minval=1000.0, maxval=10000000.0, step=1000.0, group=grpSize, tooltip="ارزش اسمی = حجم × قیمت ورود × pointvalue. اگر حجم محاسبه‌شده از این سقف بگذرد، کم می‌شود.")
+leverage   = input.float(20.0, "اهرم (برای محاسبه مارجین)", minval=1.0, maxval=500.0, step=1.0, group=grpSize)
+maxMarginUsePct = input.float(100.0, "حداکثر مصرف مارجین (٪ سرمایه)", minval=1.0, maxval=100.0, step=5.0, group=grpSize, tooltip="مارجین لازم = ارزش اسمی ÷ اهرم. اگر از این درصد سرمایه بگذرد، حجم کم می‌شود تا مارجین در حد بماند.")
+
+// کنترل‌های ریسک — همه پیش‌فرض خاموش‌اند (۰ یا خاموش) تا رفتار پیش‌فرض مثل ۵٫۱ بماند.
+maxDailyLoss    = input.float(0.0, "حداکثر ضرر روزانه (دلار، ۰ = خاموش)", minval=0.0, maxval=10000.0, step=10.0, group=grpRiskCtl, tooltip="اگر ضرر امروز (از شروع روز) به این عدد برسد، تا پایان روز معامله جدیدی باز نمی‌شود.")
+maxConsecLosses = input.int(0, "حداکثر ضرر پشت سر هم (۰ = خاموش)", minval=0, maxval=20, group=grpRiskCtl, tooltip="اگر این‌قدر معامله پشت سر هم با ضرر بسته شود، ورود جدید بلوکه می‌شود تا یک معامله سودده بیاید.")
+maxTradesPerDay = input.int(0, "حداکثر معامله در روز (۰ = خاموش)", minval=0, maxval=50, group=grpRiskCtl)
+cooldownAfterSL = input.int(0, "مکث بعد از حد ضرر (کندل، ۰ = خاموش)", minval=0, maxval=100, group=grpRiskCtl, tooltip="بعد از بسته‌شدن یک معامله با حد ضرر، این‌قدر کندل معامله جدیدی باز نمی‌شود.")
+maxHoldBars     = input.int(0, "حداکثر مدت نگهداری معامله (کندل، ۰ = خاموش)", minval=0, maxval=500, group=grpRiskCtl, tooltip="اگر معامله باز بیش از این‌قدر کندل باز بماند، با قیمت بازار بسته می‌شود.")
+minATR          = input.float(0.0, "حداقل ATR برای ورود (۰ = خاموش)", minval=0.0, maxval=50.0, step=0.1, group=grpRiskCtl, tooltip="اگر ATR کمتر از این باشد، بازار را بی‌نوسان می‌دانیم و معامله‌ای باز نمی‌شود.")
+tradeOnlyInSession = input.bool(false, "معامله فقط در سشن لندن یا نیویورک", group=grpRiskCtl)
+
+// بک‌تست
+useBacktest = input.bool(true, "بک‌تست فعال باشد (ورود/خروج استراتژی)", group=grpBT)
+riskPct     = input.float(1.0, "ریسک هر معامله (٪ سرمایه)", minval=0.1, maxval=5.0, step=0.1, group=grpBT)
+startDate   = input.time(timestamp("2024-01-01"), "شروع بک‌تست", group=grpBT)
+endDate     = input.time(timestamp("2030-01-01"), "پایان بک‌تست (این روز شامل نمی‌شود)", group=grpBT)
+// کمیسیون (۰٫۰۲٪) و لغزش (۲ تیک) مستقیم در فراخوانی strategy() ست شده‌اند؛
+// برای تغییر آن‌ها، همان دو عدد را در خط strategy() عوض کن.
+
+// رابط کاربری
+showL1     = input.bool(true, "لایه ۱ — ضروری (روند، EMA، داشبورد، ساختار، اردر بلاک باکیفیت)", group=grpUI)
+showL2     = input.bool(true, "لایه ۲ — پیشرفته (FVG، Sweep، فرکتال، Premium/Discount، سشن)", group=grpUI)
+showL3     = input.bool(true, "لایه ۳ — ریسک (ورود، حد ضرر، حد سود)", group=grpUI)
+showDash   = input.bool(true, "نمایش داشبورد", group=grpUI)
+dashPos    = input.string("Top Right", "موقعیت داشبورد", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpUI)
+dashCompact = input.bool(true, "داشبورد جمع‌وجور (موبایل)", group=grpUI)
+maxLabels  = input.int(20, "حداکثر لیبل قابل مشاهده", minval=5, maxval=50, group=grpUI)
+
+// هشدارها — فعال/غیرفعال مستقل
+alOBBull  = input.bool(true, "هشدار لمس اردر بلاک صعودی", group=grpAlert)
+alOBBear  = input.bool(true, "هشدار لمس اردر بلاک نزولی", group=grpAlert)

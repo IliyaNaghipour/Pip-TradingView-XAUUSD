@@ -1,0 +1,150 @@
+                    slLine := slL
+                    tp1Line := t1L
+                    tp2Line := t2L
+                    riskLabel := rL
+    else
+        // هنوز در انتظار: دلیل بلوکه‌شدن ثبت می‌شود.
+        pendState := 1
+        pendBlockReason := not pendConfirmed ? "در انتظار تأیید" : not g8Ok ? g8Fail : "در انتظار تأیید"
+
+// حالت ۳: برچسب انقضا یک کندل نشان داده می‌شود، بعد ستاپ ریست می‌شود.
+if barstate.isconfirmed and pendState == 3
+    if not na(pendExpiredLbl)
+        label.delete(pendExpiredLbl)
+        pendExpiredLbl := na
+    pendState := 0
+    pendDir := 0
+    pendEntry := na
+    pendSL := na
+    pendTP1 := na
+    pendTP2 := na
+    pendId := na
+    pendSrc := ""
+    pendQual := na
+    pendSetupBar := na
+    pendZoneTop := na
+    pendZoneBot := na
+    pendConfirmed := false
+    pendConfBos := false
+    pendConfRej := false
+    pendFvgOverlap := false
+    pendBlockReason := ""
+
+// آینه حالت برای بخش‌های بعد: ستاپ فعال یعنی حالت ۱ یا ۲.
+pendActive := pendState == 1 or pendState == 2
+
+// تمدید خطوط
+if not na(slLine)
+    line.set_x2(slLine, bar_index + 20)
+    line.set_x2(tp1Line, bar_index + 20)
+    line.set_x2(tp2Line, bar_index + 20)
+    label.set_x(riskLabel, bar_index + 20)
+// خاموش‌کردن نمایش ریسک فقط خطوط را پاک می‌کند؛ ستاپ و بک‌تست سر جایشان می‌مانند.
+if (not showRisk or not showL3) and not na(slLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    label.delete(riskLabel)
+    slLine := na
+    tp1Line := na
+    tp2Line := na
+    riskLabel := na
+
+// ───────────────────────── ورود و خروج بک‌تست — از ستاپ در انتظار ─────────────────────────
+// ورود فقط وقتی انجام می‌شود که ستاپ در حالت ۲ (آماده ورود) باشد — یعنی همه
+// گیت‌های G1–G8 پاس شده‌اند — داخل بازه بک‌تست باشیم و پوزیشنی باز نباشد.
+// قیمت ورود = close کندل تأیید؛ حد ضرر و TPها سطوح قفل‌شده برنامه‌ریزی‌شده‌اند.
+// سطوح معامله از ستاپ در انتظار «قفل» می‌شوند (trade*) و ستاپ جدید دیگر آن‌ها را عوض نمی‌کند.
+// شناسه یکتای معامله (tradeSeq) در کامنت ورود/خروج حمل می‌شود (§۷٫۱) تا در
+// Strategy Tester هم دیده شود: "Long #000123 OB+".
+var int tradeSeq = 0
+var float tradeQty = na
+var float tradePv = na
+var bool fillRiskDone = false
+var int[] estRiskIds = array.new_int()
+// پرچم ورود (اصلاح M-1): فقط داخل بلوک ورود ست می‌شود — جایی که strategy.entry
+// واقعاً اجرا می‌شود. هشدار «ورود معامله» فقط با این پرچم صادر می‌شود.
+bool enteredThisBar = false
+
+if useBacktest and inRange and strategy.position_size == 0 and barstate.isconfirmed and pendState == 2
+    float entryPx = close
+    float riskAmt = math.abs(entryPx - pendSL)
+    if riskAmt > 0 and entryPx > 0
+        // حجم: ریسک دلاری ÷ (فاصله حد ضرر × ارزش یک واحد قیمت) — بر اساس قرارداد نماد.
+        // syminfo.pointvalue ارزش دلاری یک واحد تغییر قیمت برای یک واحد حجم است؛ برای
+        // OANDA:XAUUSD برابر ۱ است (۱ اونس، ۱ دلار حرکت = ۱ دلار)، برای قرارداد ۱۰۰ اونسی
+        // ۱۰۰ است. اگر فید مقدار معتبر ندهد، با ۱٫۰ ادامه می‌دهیم و در لاگ نمی‌نویسیم.
+        float pv = na(syminfo.pointvalue) or syminfo.pointvalue <= 0 ? 1.0 : syminfo.pointvalue
+        float riskMoney = strategy.equity * riskPct / 100.0
+        float qtyRaw = riskMoney / (riskAmt * pv)
+        // سقف‌ها: حداکثر حجم، حداکثر ارزش اسمی، حداکثر مصرف مارجین.
+        float qtyCap = math.min(maxQty, maxNotional / (entryPx * pv))
+        float marginPerUnit = entryPx * pv / leverage
+        float qtyByMargin = marginPerUnit > 0 ? strategy.equity * maxMarginUsePct / 100.0 / marginPerUnit : qtyRaw
+        float qty = math.min(qtyRaw, qtyCap, qtyByMargin)
+        // گرد کردن به پایین‌ترین مضرب گام حجم.
+        qty := math.floor(qty / qtyStep) * qtyStep
+        if qty >= minQty
+            tradeSeq += 1
+            string seqTxt = "#" + f_pad6(tradeSeq)
+            // قفل‌کردن سطوح معامله — از همین لحظه خطوط روی چارت هم سطوح معامله را نشان می‌دهند.
+            tradeActive := true
+            tradeDir := pendDir
+            tradeEntry := entryPx
+            tradeSL := pendSL
+            tradeTP1 := pendTP1
+            tradeTP2 := pendTP2
+            tradeId := tradeSeq
+            tradeSrc := pendSrc
+            tradeQty := qty
+            tradePv := pv
+            fillRiskDone := false
+            tradeEntryBar := bar_index
+            tradesToday += 1
+            // ذخیره شناسه‌دار برای آمار: ریسک برنامه‌ریزی‌شده (در اولین کندل بعد
+            // از ورود با ریسک پرشده جایگزین می‌شود، L-12).
+            array.push(idList, tradeSeq)
+            array.push(riskById, riskAmt * qty * pv)
+            array.push(srcById, pendSrc)
+            int sessCode = (inLondonRaw or inLdnKzRaw) and (inNyRaw or inNyKzRaw) ? 3 : inLondonRaw or inLdnKzRaw ? 1 : inNyRaw or inNyKzRaw ? 2 : inAsiaRaw ? 0 : 3
+            array.push(sessById, sessCode)
+            array.push(monthById, year * 12 + month)
+            array.push(adxById, adxVal)
+            array.push(qtyById, qty)
+            if not na(slLine)
+                line.delete(slLine)
+                line.delete(tp1Line)
+                line.delete(tp2Line)
+                label.delete(riskLabel)
+            if showRisk and showL3
+                slLine := line.new(bar_index, tradeSL, bar_index + 20, tradeSL, color=color.red, style=line.style_dashed)
+                tp1Line := line.new(bar_index, tradeTP1, bar_index + 20, tradeTP1, color=color.green, style=line.style_dashed)
+                tp2Line := line.new(bar_index, tradeTP2, bar_index + 20, tradeTP2, color=color.green, style=line.style_dotted)
+                riskLabel := label.new(bar_index + 20, tradeTP1, "ورود " + str.tostring(tradeEntry, format.mintick) + " | حد ضرر " + str.tostring(tradeSL, format.mintick) + " | " + tradeSrc + " | معامله باز " + seqTxt, style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+            enteredThisBar := true
+            if pendDir == 1
+                strategy.entry("Long", strategy.long, qty=qty, comment="Long " + seqTxt + " " + pendSrc)
+                // معماری خروج: دو خروج ۵۰٪ و ۱۰۰٪ از «باقی‌مانده» که هر دو حد ضرر محافظ
+                // دارند؛ مجموع خروج‌ها دقیقاً کل پوزیشن را پوشش می‌دهد و هیچ مقداری بدون
+                // محافظ نمی‌ماند. comment_profit/comment_loss می‌گوید خروج با حد سود بوده یا
+                // حد ضرر — دسته‌بندی آمار از همین کامنت خوانده می‌شود.
+                strategy.exit("TP1", "Long", qty_percent=50, limit=tradeTP1, stop=tradeSL, comment_profit="TP1 " + seqTxt, comment_loss="SL " + seqTxt)
+                strategy.exit("TP2", "Long", qty_percent=100, limit=tradeTP2, stop=tradeSL, comment_profit="TP2 " + seqTxt, comment_loss="SL " + seqTxt)
+            else if pendDir == -1
+                strategy.entry("Short", strategy.short, qty=qty, comment="Short " + seqTxt + " " + pendSrc)
+                strategy.exit("TP1", "Short", qty_percent=50, limit=tradeTP1, stop=tradeSL, comment_profit="TP1 " + seqTxt, comment_loss="SL " + seqTxt)
+                strategy.exit("TP2", "Short", qty_percent=100, limit=tradeTP2, stop=tradeSL, comment_profit="TP2 " + seqTxt, comment_loss="SL " + seqTxt)
+            // ستاپ مصرف شد: دیگر در انتظار نیست.
+            pendState := 0
+            pendDir := 0
+            pendEntry := na
+            pendSL := na
+            pendTP1 := na
+            pendTP2 := na
+            pendId := na
+            pendSrc := ""
+            pendQual := na
+            pendSetupBar := na
+            pendZoneTop := na
+            pendZoneBot := na
+            pendConfirmed := false

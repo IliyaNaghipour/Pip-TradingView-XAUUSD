@@ -1,0 +1,150 @@
+        table.cell(mtfTbl, 2, 6, not valid_h04 ? "N/A — داده ناکافی" : str.format_time(t_h04, "HH:mm", "Asia/Tehran") + " ✓" + (timeframe.period == "240" ? " (چارت)" : ""), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 0, 7, "D", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 1, 7, not valid_day ? "N/A" : trend_day == 1 ? "▲ صعودی" : trend_day == -1 ? "▼ نزولی" : "— خنثی", text_color=color.white, bgcolor=not valid_day ? color.new(color.yellow, 0) : trend_day == 1 ? color.new(color.green, 0) : trend_day == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+        table.cell(mtfTbl, 2, 7, not valid_day ? "N/A — داده ناکافی" : str.format_time(t_day, "HH:mm", "Asia/Tehran") + " ✓" + (timeframe.period == "D" ? " (چارت)" : ""), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 0, 8, "W", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 1, 8, not valid_wek ? "N/A" : trend_wek == 1 ? "▲ صعودی" : trend_wek == -1 ? "▼ نزولی" : "— خنثی", text_color=color.white, bgcolor=not valid_wek ? color.new(color.yellow, 0) : trend_wek == 1 ? color.new(color.green, 0) : trend_wek == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+        table.cell(mtfTbl, 2, 8, not valid_wek ? "N/A — داده ناکافی" : str.format_time(t_wek, "HH:mm", "Asia/Tehran") + " ✓" + (timeframe.period == "W" ? " (چارت)" : ""), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 0, 9, "M", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 1, 9, not valid_mon ? "N/A" : trend_mon == 1 ? "▲ صعودی" : trend_mon == -1 ? "▼ نزولی" : "— خنثی", text_color=color.white, bgcolor=not valid_mon ? color.new(color.yellow, 0) : trend_mon == 1 ? color.new(color.green, 0) : trend_mon == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+        table.cell(mtfTbl, 2, 9, not valid_mon ? "N/A — داده ناکافی" : str.format_time(t_mon, "HH:mm", "Asia/Tehran") + " ✓" + (timeframe.period == "M" ? " (چارت)" : ""), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    // ── جدول تصمیم ──
+    if not na(decisionTbl)
+        // مقادیر کمکی (فقط برای داشبورد — گیت‌ها در ماشین ستاپ ارزیابی می‌شوند).
+        string regimeTxt = regimeUnknown ? "نامشخص" : regimeState == 1 ? "صعودی (Bull)" : regimeState == -1 ? "نزولی (Bear)" : "خنثی"
+        string dirTxt = dirUnknown ? "نامشخص" : dirState == 1 ? "لانگ" : dirState == -1 ? "شورت" : "خنثی"
+        string lastStructTxt = "—"
+        if not na(lastStructUpBar) or not na(lastStructDnBar)
+            bool upLast = structState == 1
+            int lsb = upLast ? lastStructUpBar : lastStructDnBar
+            lastStructTxt := lastStruct + " " + (upLast ? "صعودی" : "نزولی") + " — " + str.tostring(bar_index - lsb) + " کندل قبل"
+        string lastSweepTxt = "—"
+        if not na(lastSweepUpBar) or not na(lastSweepDnBar)
+            bool swUpLast = not na(lastSweepUpBar) and (na(lastSweepDnBar) or lastSweepUpBar >= lastSweepDnBar)
+            int swb = swUpLast ? lastSweepUpBar : lastSweepDnBar
+            lastSweepTxt := (swUpLast ? "جارو بالای سقف" : "جارو زیر کف") + " — " + str.tostring(bar_index - swb) + " کندل قبل"
+        string premDiscTxt = "—"
+        if not na(eqLevel) and not na(swingHi) and not na(swingLo) and swingHi > swingLo
+            float pdPct = math.abs(close - eqLevel) / (swingHi - swingLo) * 100.0
+            premDiscTxt := (close > eqLevel ? "گران (Premium) " : "ارزان (Discount) ") + str.tostring(pdPct, "#.##") + "٪ تا تعادل"
+        string mainLevelsTxt = "روزانه " + (na(swHi_day) ? "—" : str.tostring(swHi_day, format.mintick)) + " / " + (na(swLo_day) ? "—" : str.tostring(swLo_day, format.mintick)) + " | ۴ساعته " + (na(swHi_h04) ? "—" : str.tostring(swHi_h04, format.mintick)) + " / " + (na(swLo_h04) ? "—" : str.tostring(swLo_h04, format.mintick))
+        string biasTxt = dirTxt
+        string qualTxt = (pendState == 1 or pendState == 2) and not na(pendQual) ? str.tostring(math.round(pendQual)) + (pendSrc == "123" ? " / ۸۰" : " / ۱۰۰") + " (احتمال موفقیت نیست)" : "—"
+        string scoreTxt = na(bestObScore) ? "—" : str.tostring(math.round(bestObScore)) + " / ۱۰۰"
+        // وضعیت گیت‌ها برای ستاپ در انتظار (باز-محاسبه از مقادیر جاری).
+        bool dHasPend = pendState == 1 or pendState == 2
+        float dDistNow = dHasPend ? (pendDir == 1 ? math.max(0.0, close - pendZoneTop) : math.max(0.0, pendZoneBot - close)) : na
+        float dRiskNow = dHasPend ? math.abs(close - pendSL) : na
+        bool dG6Ok = dHasPend and not na(dDistNow) and not na(dRiskNow) and dDistNow <= maxEntryDistATR * atr and dRiskNow > 0 and math.abs(pendTP1 - close) / dRiskNow >= minRR
+        bool dG7Ok = dHasPend and not na(dRiskNow) and estSpreadTicks * syminfo.mintick <= effMaxSpreadFrac * dRiskNow
+        string gateTxt = "—"
+        if dHasPend
+            int passedGates = 4 + (pendConfirmed ? 1 : 0) + (dG6Ok ? 1 : 0) + (dG7Ok ? 1 : 0) + (g8Ok ? 1 : 0)
+            string firstFail = not pendConfirmed ? "G5 تأیید برگشت" : not dG6Ok ? "G6 فاصله/R:R" : not dG7Ok ? "G7 اسپرد" : not g8Ok ? g8Fail : ""
+            gateTxt := "تأیید: " + str.tostring(passedGates) + " از ۸ گیت" + (firstFail != "" ? " — " + firstFail : "")
+        float showEntry = tradeActive ? tradeEntry : dHasPend ? pendEntry : na
+        float showSL = tradeActive ? tradeSL : dHasPend ? pendSL : na
+        float showTP1 = tradeActive ? tradeTP1 : dHasPend ? pendTP1 : na
+        float showTP2 = tradeActive ? tradeTP2 : dHasPend ? pendTP2 : na
+        string entryTxt = na(showEntry) ? "—" : str.tostring(showEntry, format.mintick)
+        string slTxt = na(showSL) ? "—" : str.tostring(showSL, format.mintick)
+        string tp1Txt = na(showTP1) ? "—" : str.tostring(showTP1, format.mintick)
+        string tp2Txt = na(showTP2) ? "—" : str.tostring(showTP2, format.mintick)
+        string rrTxt = na(showEntry) or na(showSL) or na(showTP1) or math.abs(showEntry - showSL) <= 0 ? "—" : str.tostring(math.abs(showTP1 - showEntry) / math.abs(showEntry - showSL), "#.##") + "R"
+        float spreadUsd = estSpreadTicks * syminfo.mintick
+        string spreadTxt = dHasPend ? str.tostring(spreadUsd, format.mintick) + " / سقف " + str.tostring(effMaxSpreadFrac * dRiskNow, format.mintick) + (dG7Ok ? " ✓" : " ✗") : "تخمینی " + str.tostring(spreadUsd, format.mintick) + " (بدون ستاپ)"
+        // وضعیت نهایی سیستم (§۸٫۴) — اولویت دلیل: جهت نامشخص > کنترل ریسک >
+        // اسپرد > رنج > نوسان > سشن > خبر دستی.
+        string finalReason = ""
+        bool finalBlocked = false
+        if dirUnknown
+            finalBlocked := true
+            finalReason := "داده جهت در دسترس نیست"
+        else if not canTrade
+            finalBlocked := true
+            finalReason := "کنترل ریسک"
+        else if dHasPend and not dG7Ok
+            finalBlocked := true
+            finalReason := "اسپرد بیش از حد مجاز"
+        else if not choppyOk
+            finalBlocked := true
+            finalReason := "بازار رنج"
+        else if not volOk
+            finalBlocked := true
+            finalReason := volLow ? "نوسان خیلی پایین" : "نوسان خیلی بالا"
+        else if not sessOk
+            finalBlocked := true
+            finalReason := "خارج از سشن مجاز"
+        else if not newsOk
+            finalBlocked := true
+            finalReason := "بلوک خبری دستی"
+        string finalState = "WAIT"
+        color finalBg = color.new(color.gray, 0)
+        if finalBlocked
+            finalState := "NO TRADE"
+            finalBg := color.new(color.orange, 0)
+        else if pendState == 2 and pendDir == 1 and regimeState == 1 and not na(pendQual) and pendQual >= 75 and setupScore == 2 and pendConfBos and pendConfRej
+            finalState := "STRONG BUY"
+            finalBg := color.new(#1B5E20, 0)
+        else if pendState == 2 and pendDir == 1
+            finalState := "BUY"
+            finalBg := color.new(color.green, 0)
+        else if pendState == 2 and pendDir == -1 and regimeState == -1 and not na(pendQual) and pendQual >= 75 and setupScore == -2 and pendConfBos and pendConfRej
+            finalState := "STRONG SELL"
+            finalBg := color.new(#7F0000, 0)
+        else if pendState == 2 and pendDir == -1
+            finalState := "SELL"
+            finalBg := color.new(color.red, 0)
+        string finalTxt = finalState + (useBacktest ? "" : " (نمایشی)")
+        string allowTxt = finalBlocked ? "خیر — " + finalReason + (newsBlock ? " — " + newsNote : "") : pendState == 2 ? "بله" : "منتظر ستاپ"
+        table.cell(decisionTbl, 0, 0, "پیپ ۵٫۳ | تصمیم معاملاتی", text_color=color.white, bgcolor=color.new(color.blue, 0))
+        table.cell(decisionTbl, 1, 0, timeframe.period + " | پروفایل " + profName + (profNote != "" ? " | " + profNote : "") + (useADX ? " | ADX " + str.tostring(adxVal, "#.#") : ""), text_color=color.white, bgcolor=color.new(color.blue, 0))
+        table.cell(decisionTbl, 0, 1, "رژیم (W+M)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 1, regimeTxt, text_color=color.white, bgcolor=regimeUnknown ? color.new(color.yellow, 0) : regimeState == 1 ? color.new(color.green, 0) : regimeState == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 2, "جهت (D+4H)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 2, dirTxt, text_color=color.white, bgcolor=dirUnknown ? color.new(color.yellow, 0) : dirState == 1 ? color.new(color.green, 0) : dirState == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 3, "آخرین BOS/CHoCH", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 3, lastStructTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 4, "آخرین Sweep", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 4, lastSweepTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 5, "Premium / Discount", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 5, premDiscTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 6, "سقف/کف اصلی (D و 4H)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 6, mainLevelsTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 7, "بایاس", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 7, biasTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 8, "کیفیت ستاپ", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 8, qualTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 9, "امتیاز بهترین OB", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 9, scoreTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 10, "وضعیت تأیید ورود", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 10, gateTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 11, "قیمت ورود", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 11, entryTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 12, "حد ضرر", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 12, slTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 13, "TP1", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 13, tp1Txt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 14, "TP2", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 14, tp2Txt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 15, "نسبت R:R", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 15, rrTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 16, "وضعیت اسپرد", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 16, spreadTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 17, "اجازه معامله", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 17, allowTxt, text_color=color.white, bgcolor=finalBlocked ? color.new(color.orange, 0) : pendState == 2 ? color.new(color.green, 0) : color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 18, "آخرین رویداد", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 18, lastSignal, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 0, 19, "وضعیت نهایی سیستم", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(decisionTbl, 1, 19, finalTxt, text_color=color.white, bgcolor=finalBg)
+
+// ───────────────────────── هشدارها — ۱۴ هشدار تحلیلی + هشدار سفارش ─────────────────────────
+// در ۵٫۱ از alertcondition استفاده شده بود که داخل strategy() هیچ اثری ندارد (هشدار
+// کامپایلر در ۵٫۱). حالا با alert() فراخوانی می‌شود: هر رویداد یک فراخوانی جدا دارد،
+// پس چند رویداد در یک کندل هیچ‌کدام گم نمی‌شوند. همه روی کندل تأییدشده و فقط یک بار
+// در هر کندل (freq_once_per_bar_close) صادر می‌شوند. پیام‌ها پویا هستند: نماد، تایم‌فریم،
+// قیمت و رویداد در متن می‌آید و با Webhook تریدینگ‌ویو سازگار است. برای هشدار تلگرام،
+// در TradingView یک Alert روی همین استراتژی بساز و گزینه «alert() function calls» را
+// انتخاب کن؛ هیچ توکن یا کلیدی داخل کد Pine قرار نمی‌گیرد.
+string alSym = syminfo.ticker + " | " + timeframe.period + " | "
+if alOBBull and obBullTouchEvt

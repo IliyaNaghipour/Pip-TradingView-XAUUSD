@@ -1,0 +1,150 @@
+f_dirPts(int dir) =>
+    dir == 1 ? (dirScore >= 2 ? 25 : dirScore == 0 or dirUnknown ? 10 : 0) : (dirScore <= -2 ? 25 : dirScore == 0 or dirUnknown ? 10 : 0)
+
+// بازه بک‌تست نیمه‌باز [شروع، پایان): پایان ۲۰۳۰-۰۱-۰۱ یعنی تا آخر ۲۰۲۹ حساب می‌شود؛
+// پس پیش‌فرض پایان بک‌تست بلافاصله بعد از نصب منقضی نمی‌شود.
+inRange = time >= startDate and time < endDate
+
+// نکته Pine: تابع plot() فقط در بدنه اصلی (global scope) مجاز است و نمی‌تواند
+// داخل if باشد (خطای CE10188). پس نمایش EMA با سری شرطی کنترل می‌شود، نه با if.
+plot(showL1 ? emaFast : na, "EMA سریع", color=color.new(color.blue, 0))
+plot(showL1 ? emaSlow : na, "EMA کند", color=color.new(color.orange, 0))
+
+// ───────────────────────── سشن‌ها (Timezone واقعی، DST با موتور TradingView) ─────────────────────────
+// سشن‌های «واقعی» (بدون ورودی نمایش) برای امتیاز OB و نام سشن استفاده می‌شوند؛
+// ورودی‌های showAsia و ... فقط پس‌زمینه را کنترل می‌کنند.
+inAsiaRaw   = not na(time(timeframe.period, "0000-0600", "Asia/Tokyo"))
+inLondonRaw = not na(time(timeframe.period, "0800-1630", "Europe/London"))
+inNyRaw     = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+inLdnKzRaw  = not na(time(timeframe.period, "0700-0900", "Europe/London"))
+inNyKzRaw   = not na(time(timeframe.period, "0700-0900", "America/New_York"))
+inAsia   = showAsia and inAsiaRaw
+inLondon = showLondon and inLondonRaw
+inNY     = showNY and inNyRaw
+inLdnKZ  = showKillZone and inLdnKzRaw
+inNyKZ   = showKillZone and inNyKzRaw
+inAnySess = inAsiaRaw or inLondonRaw or inNyRaw or inLdnKzRaw or inNyKzRaw
+sessScoreBonus = inLdnKzRaw or inNyKzRaw ? 5.0 : inAnySess ? 2.0 : 0.0
+
+bgcolor(showSessBG and inLdnKZ ? color.new(color.purple, 93) : showSessBG and inNyKZ ? color.new(color.blue, 93) : showSessBG and inLondon ? color.new(color.teal, 94) : showSessBG and inNY ? color.new(color.orange, 94) : showSessBG and inAsia ? color.new(color.gray, 94) : na, title="پس‌زمینه سشن")
+
+// سقف / کف سشن جاری
+var float sessHi = na
+var float sessLo = na
+var string sessKey = ""
+sessKeyNow = inLdnKzRaw ? "LKZ" : inNyKzRaw ? "NKZ" : inLondonRaw ? "LDN" : inNyRaw ? "NY" : inAsiaRaw ? "ASIA" : ""
+// سقف/کف سشن فقط روی کندل تأییدشده به‌روز می‌شود؛ وقتی سشنی فعال نیست، na
+// می‌شود (در ۵٫۲ مقدار کهنه می‌ماند و با high/low داخل کندل به‌روز می‌شد — L-7).
+if barstate.isconfirmed
+    if sessKeyNow == ""
+        sessKey := ""
+        sessHi := na
+        sessLo := na
+    else if sessKeyNow != sessKey
+        sessKey := sessKeyNow
+        sessHi := high
+        sessLo := low
+    else
+        sessHi := math.max(sessHi, high)
+        sessLo := math.min(sessLo, low)
+plot(showSessHL and showL2 and not na(sessHi) ? sessHi : na, "سقف سشن", color=color.new(color.gray, 20), style=plot.style_linebr)
+plot(showSessHL and showL2 and not na(sessLo) ? sessLo : na, "کف سشن", color=color.new(color.gray, 20), style=plot.style_linebr)
+
+// ───────────────────────── فرکتال — دقیقاً روی Pivot ─────────────────────────
+ph = ta.pivothigh(high, effFractalLen, effFractalLen)
+pl = ta.pivotlow(low, effFractalLen, effFractalLen)
+
+var label[] evtLabelsL1 = array.new_label()
+var label[] evtLabelsL2 = array.new_label()
+var float lastPh = na
+var float lastPl = na
+var float prevPh = na
+var float prevPl = na
+
+// ردیابی سوئینگ همیشه انجام می‌شود، حتی اگر نمایش فرکتال خاموش باشد؛
+// چون BOS و CHoCH و Premium/Discount به همین سوئینگ‌ها وابسته‌اند.
+if not na(ph) and barstate.isconfirmed
+    prevPh := lastPh
+    lastPh := ph
+    if showFractal and showL2
+        label lb = label.new(bar_index - effFractalLen, ph, "▼", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.red, 100), textcolor=color.new(color.red, 0), size=size.tiny)
+        array.push(evtLabelsL2, lb)
+        if array.size(evtLabelsL2) > maxLabels
+            label.delete(array.shift(evtLabelsL2))
+if not na(pl) and barstate.isconfirmed
+    prevPl := lastPl
+    lastPl := pl
+    if showFractal and showL2
+        label lb = label.new(bar_index - effFractalLen, pl, "▲", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.green, 100), textcolor=color.new(color.green, 0), size=size.tiny)
+        array.push(evtLabelsL2, lb)
+        if array.size(evtLabelsL2) > maxLabels
+            label.delete(array.shift(evtLabelsL2))
+
+// ───────────────────────── ساختار بازار: BOS / CHoCH ─────────────────────────
+// موتور ساختار همیشه اجرا می‌شود (روی امتیاز OB و داشبورد اثر دارد)؛
+// فقط «لیبل»‌ها با لایه ۱ کنترل می‌شوند.
+// هر سوئینگ بعد از شکست، وضعیت broken می‌گیرد و دوباره سیگنال نمی‌دهد.
+// CHoCH بر اساس جهت ساختار قبلی است، نه EMA.
+var int structState = 0
+var bool swingHiBroken = false
+var bool swingLoBroken = false
+var string lastStruct = "—"
+bool bosUpEvt = false
+bool bosDnEvt = false
+bool chochUpEvt = false
+bool chochDnEvt = false
+
+if not na(ph)
+    swingHiBroken := false
+if not na(pl)
+    swingLoBroken := false
+
+if barstate.isconfirmed and not na(lastPh) and not swingHiBroken and close > lastPh
+    swingHiBroken := true
+    if structState == -1
+        chochUpEvt := true
+        lastStruct := "CHoCH"
+    else
+        bosUpEvt := true
+        lastStruct := "BOS"
+    structState := 1
+    if showL1
+        label lb = label.new(bar_index, low, chochUpEvt ? "CHoCH" : "BOS", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabelsL1, lb)
+        if array.size(evtLabelsL1) > maxLabels
+            label.delete(array.shift(evtLabelsL1))
+
+if barstate.isconfirmed and not na(lastPl) and not swingLoBroken and close < lastPl
+    swingLoBroken := true
+    if structState == 1
+        chochDnEvt := true
+        lastStruct := "CHoCH"
+    else
+        bosDnEvt := true
+        lastStruct := "BOS"
+    structState := -1
+    if showL1
+        label lb = label.new(bar_index, high, chochDnEvt ? "CHoCH" : "BOS", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.maroon, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabelsL1, lb)
+        if array.size(evtLabelsL1) > maxLabels
+            label.delete(array.shift(evtLabelsL1))
+
+// ───────────────────────── جاروی نقدینگی ─────────────────────────
+var bool swingHiSwept = false
+var bool swingLoSwept = false
+bool sweepUpEvt = false
+bool sweepDnEvt = false
+if not na(ph)
+    swingHiSwept := false
+if not na(pl)
+    swingLoSwept := false
+
+if barstate.isconfirmed and not na(lastPh) and not swingHiSwept and not swingHiBroken and high > lastPh and close < lastPh
+    swingHiSwept := true
+    sweepUpEvt := true
+    if showL2
+        label lb = label.new(bar_index, high, "SWP", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.purple, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabelsL2, lb)
+        if array.size(evtLabelsL2) > maxLabels
+            label.delete(array.shift(evtLabelsL2))
+if barstate.isconfirmed and not na(lastPl) and not swingLoSwept and not swingLoBroken and low < lastPl and close > lastPl

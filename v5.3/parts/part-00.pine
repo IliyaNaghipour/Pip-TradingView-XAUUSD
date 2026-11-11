@@ -1,0 +1,150 @@
+//@version=6
+// پیپ نسخه ۵٫۳ — یکپارچه: اندیکاتور + بک‌تست در یک فایل — فقط TradingView — Pine Script v6
+// نسخه ۵٫۳: تکامل ۵٫۲ بر اساس ممیزی حرفه‌ای (۲۹ نقص) و گزارش بک‌تست ۶ ماهه.
+// تغییرات اصلی نسبت به ۵٫۲:
+//  - موتور MTF واقعی با ۹ تایم‌فریم (10S تا ماهانه) جایگزین فیلتر تک-HTF شد؛
+//    رژیم (W/M)، جهت (D/4H) و ستاپ (1H/15M) جدا تجمیع می‌شوند؛ تایم‌فریم
+//    نامعتبر صریحاً N/A نشان داده می‌شود و دیگر fallback به روند چارت نیست.
+//  - موتور تأیید ورود (G1 تا G8): لمس OB فقط ستاپ «در انتظار تأیید» می‌سازد؛
+//    ورود فقط بعد از تأیید Micro (BOS/کندل برگشتی)، بررسی فاصله ورود، R:R و
+//    اسپرد انجام می‌شود. ستاپ در انتظار بعد از بسته‌شدن معامله هم قابل معامله است.
+//  - هر معامله شناسه یکتا (#000001 و...) دارد؛ کامنت ورود/خروج شناسه را حمل
+//    می‌کند و همه خروج‌های جزئی (TP1/TP2/SL/BE/Trail) به همان شناسه وصل‌اند.
+//  - پروفایل اختصاصی M1/M5/M15 + پیش‌تنظیم‌های Conservative/Balanced/Aggressive.
+//  - Break-Even بعد از TP1 (پیش‌فرض روشن) و Trailing Stop اختیاری (پیش‌فرض خاموش).
+//  - فیلتر اسپرد، فیلتر نوسان (ATR Percentile)، تشخیص رنج و بلوک خبری دستی.
+//  - آمار بک‌تست کامل شد: Drawdown معاملات بسته، تفکیک سشن، جدول ماهانه،
+//    شمارش TP1 با سه مسیر (زنده + استنتاج از TP2/SL)، میانگین R با ریسک پرشده.
+//  - داشبورد جدید در ۴ جدول: MTF، تصمیم معاملاتی (STRONG BUY تا NO TRADE)،
+//    آمار بک‌تست و عملکرد ماهانه.
+// ساخته‌شده از ۵٫۲ (تکامل، نه بازنویسی). نسخه ۵٫۲ دست‌نخورده مانده است.
+// مخصوص طلا (XAUUSD). ابزار آموزشی است — سیگنال خرید و فروش نیست. اول روی دمو تست کن.
+// تایم‌فریم‌های هدف چارت: M1 / M5 / M15 (پروفایل اختصاصی هر کدام).
+//
+// اصل طراحی: فقط «یک» موتور OB / FVG / ۱-۲-۳ وجود دارد. همان لمس اردر بلاکی که خطوط
+// ورود/حد ضرر/حد سود را روی چارت می‌کشد، معامله بک‌تست را هم باز می‌کند؛ پس چیزی که
+// می‌بینی دقیقاً همان چیزی است که بک‌تست گرفته است. ورودی useBacktest را خاموش کنی،
+// فایل مثل یک اندیکاتور خالص عمل می‌کند (بدون معامله).
+//
+// هشدار مهم: آمار بک‌تست تضمین عملکرد آینده نیست. اسپرد، کمیسیون و لغزش قیمت
+// در بک‌تست تقریبی‌اند و در بازار واقعی متفاوت‌اند. فقط روی دمو تست کن.
+// امتیاز کیفیت ستاپ، احتمال موفقیت معامله نیست.
+// وضعیت تست این نسخه: کامپایل واقعی در تریدینگ‌ویو اینجا تست نشده است (NOT TESTED)؛
+// برای کامپایل، فایل را در Pine Editor باز کن و خطای دقیق را بفرست.
+
+strategy("پیپ نسخه ۵٫۳ — فرکتال / اردر بلاک / گپ / پرچم + بک‌تست | طلا", shorttitle="پیپ ۵٫۳", overlay=true, initial_capital=10000, currency=currency.USD, pyramiding=0, process_orders_on_close=true, commission_type=strategy.commission.percent, commission_value=0.02, slippage=2, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+// توجه: فراخوانی strategy() عمداً در یک خط نوشته شده است.
+// ادامهٔ چندخطی با تورفتگی مضرب ۴ در پاین‌اسکریپت بلاک محلی خوانده می‌شود،
+// و هنگام تایپ در ویرایشگر، تورفتگی ادامه‌ها پلکانی می‌شود (۵/۱۰/۱۵/۲۰) و خطای CE10013 می‌دهد.
+// این فراخوانی را تک‌خط نگه دارید.
+
+// ───────────────────────── ورودی‌ها ─────────────────────────
+grpTrend  = "روند و تایم بالاتر"
+grpMTF    = "تحلیل چندتایم‌فریمی (MTF)"
+grpFrac   = "فرکتال"
+grpOB     = "اردر بلاک (طلا)"
+grpFVG    = "گپ ارزش منصفانه"
+grp123    = "الگوی ۱-۲-۳"
+grpFlag   = "پرچم (آزمایشی)"
+grpSess   = "سشن‌ها"
+grpRisk   = "مدیریت ریسک"
+grpSize   = "حجم و مارجین (بر اساس قرارداد نماد)"
+grpRiskCtl = "کنترل‌های ریسک (همه پیش‌فرض خاموش‌اند)"
+grpBT     = "بک‌تست (استراتژی)"
+grpUI     = "رابط کاربری و لایه‌ها"
+grpAlert  = "هشدارها"
+grpProf   = "پروفایل تایم‌فریم (M1 / M5 / M15)"
+grpP1     = "پروفایل M1"
+grpP5     = "پروفایل M5"
+grpP15    = "پروفایل M15"
+grpEntry  = "تأیید ورود (G1 تا G8)"
+grpBE     = "Break-Even و Trailing Stop"
+grpFilter = "فیلترهای بازار"
+
+// روند چارت (EMA ۵۰/۲۰۰ — موتور روند چارت ۵٫۲ حفظ شده است)
+emaFastLen = input.int(50, "میانگین سریع", minval=5, maxval=200, group=grpTrend)
+emaSlowLen = input.int(200, "میانگین کند", minval=20, maxval=400, group=grpTrend)
+
+// تحلیل چندتایم‌فریمی — روند HTF تک‌تایم‌فریمی ۵٫۲ حذف شد و با موتور MTF
+// (۹ تایم‌فریم، کندل بسته‌شده قبلی، بدون lookahead) جایگزین شد. تایم‌فریم
+// نامعتبر صریحاً N/A است و دیگر fallback به روند چارت وجود ندارد.
+microTF1 = input.timeframe("5", "تایم‌فریم Micro اول (تأیید ورود)", group=grpMTF, tooltip="پیش‌فرض برای چارت M15: ۵ دقیقه. چارت M5 ← ۱ دقیقه؛ چارت M1 ← ۱۰ ثانیه؛ چارت 1H به بالا ← ۱۵ دقیقه. اگر Micro بزرگ‌تر یا مساوی تایم‌فریم چارت باشد، آن منبع N/A می‌شود و تأیید فقط با کندل برگشتی چارت انجام می‌شود.")
+microTF2 = input.timeframe("1", "تایم‌فریم Micro دوم (تأیید ورود)", group=grpMTF, tooltip="پیش‌فرض برای چارت M15: ۱ دقیقه. چارت M5 ← ۱۰ ثانیه؛ چارت M1 ← همان ۱۰ ثانیه؛ چارت 1H به بالا ← ۵ دقیقه.")
+
+// پروفایل تایم‌فریم — مقادیر جدول‌ها «فرضیه شروع» هستند، نه بهینه‌شده؛
+// فقط با بک‌تست + بررسی حساسیت تغییر می‌کنند (بخش ۹ طرح).
+profileMode = input.string("Auto (by chart TF)", "پروفایل تایم‌فریم", options=["Auto (by chart TF)", "M1", "M5", "M15"], group=grpProf, tooltip="در حالت Auto، چارت M1 پروفایل M1، چارت M5 پروفایل M5 و بقیه تایم‌فریم‌ها پروفایل M15 را می‌گیرند.")
+preset = input.string("Balanced", "پیش‌تنظیم", options=["Balanced", "Conservative", "Aggressive"], group=grpProf, tooltip="Conservative سخت‌گیرانه‌تر است (امتیاز +۱۰، جابه‌جایی ×۱٫۲۵، تأیید Micro با AND + جارو الزامی)؛ Aggressive شل‌تر است (امتیاز −۱۰، جابه‌جایی ×۰٫۸۰). پیش‌تنظیم هرگز ریسک هر معامله، سرمایه، کمیسیون یا لغزش را تغییر نمی‌دهد.")
+
+// ── پروفایل M1 (پیش‌تنظیم Balanced) ──
+p1AtrLen        = input.int(14, "M1: ATR Length", minval=5, maxval=50, group=grpP1)
+p1ObLookback    = input.int(10, "M1: OB Lookback (کندل)", minval=5, maxval=50, group=grpP1)
+p1ObExpMin      = input.int(120, "M1: OB Expiration (دقیقه)", minval=5, maxval=10080, group=grpP1)
+p1ObDisp        = input.float(0.5, "M1: OB Displacement Threshold (× ATR)", minval=0.3, maxval=3.0, step=0.05, group=grpP1)
+p1MinScore      = input.int(50, "M1: Minimum OB Score (۰ تا ۱۰۰)", minval=0, maxval=100, group=grpP1)
+p1FractalLen    = input.int(2, "M1: Fractal Length", minval=1, maxval=5, group=grpP1)
+p1FvgDirOnly    = input.bool(true, "M1: FVG فقط هم‌جهت", group=grpP1)
+p1SweepLookback = input.int(5, "M1: Sweep Lookback (کندل)", minval=1, maxval=20, group=grpP1)
+p1MaxSetupAgeMin = input.int(15, "M1: Maximum Setup Age (دقیقه)", minval=1, maxval=1440, group=grpP1)
+p1SlBuffer      = input.float(0.2, "M1: Stop Loss Buffer (× ATR)", minval=0.0, maxval=1.0, step=0.05, group=grpP1)
+p1Tp1RR         = input.float(1.5, "M1: TP1 (× R)", minval=0.5, maxval=5.0, step=0.5, group=grpP1)
+p1Tp2RR         = input.float(2.0, "M1: TP2 (× R)", minval=1.0, maxval=6.0, step=0.5, group=grpP1)
+p1Session       = input.string("Kill Zone", "M1: Session Filter", options=["Kill Zone", "لندن/نیویورک", "همه سشن‌ها"], group=grpP1)
+p1MaxSpreadFrac = input.float(0.05, "M1: Maximum Spread (کسر از فاصله SL)", minval=0.01, maxval=0.5, step=0.01, group=grpP1)
+p1Conf          = input.string("OR", "M1: Entry Confirmation", options=["OR", "AND"], group=grpP1, tooltip="OR: Micro BOS یا کندل برگشتی کافی است. AND: هر دو لازم‌اند.")
+p1CooldownMin   = input.int(10, "M1: Cooldown بعد از SL (دقیقه، ۰ = خاموش)", minval=0, maxval=1440, group=grpP1)
+p1MaxHoldMin    = input.int(60, "M1: Maximum Holding Time (دقیقه، ۰ = خاموش)", minval=0, maxval=10080, group=grpP1)
+
+// ── پروفایل M5 (پیش‌تنظیم Balanced) ──
+p5AtrLen        = input.int(14, "M5: ATR Length", minval=5, maxval=50, group=grpP5)
+p5ObLookback    = input.int(15, "M5: OB Lookback (کندل)", minval=5, maxval=50, group=grpP5)
+p5ObExpMin      = input.int(480, "M5: OB Expiration (دقیقه)", minval=5, maxval=10080, group=grpP5)
+p5ObDisp        = input.float(0.75, "M5: OB Displacement Threshold (× ATR)", minval=0.3, maxval=3.0, step=0.05, group=grpP5)
+p5MinScore      = input.int(55, "M5: Minimum OB Score (۰ تا ۱۰۰)", minval=0, maxval=100, group=grpP5)
+p5FractalLen    = input.int(2, "M5: Fractal Length", minval=1, maxval=5, group=grpP5)
+p5FvgDirOnly    = input.bool(true, "M5: FVG فقط هم‌جهت", group=grpP5)
+p5SweepLookback = input.int(5, "M5: Sweep Lookback (کندل)", minval=1, maxval=20, group=grpP5)
+p5MaxSetupAgeMin = input.int(30, "M5: Maximum Setup Age (دقیقه)", minval=1, maxval=1440, group=grpP5)
+p5SlBuffer      = input.float(0.25, "M5: Stop Loss Buffer (× ATR)", minval=0.0, maxval=1.0, step=0.05, group=grpP5)
+p5Tp1RR         = input.float(2.0, "M5: TP1 (× R)", minval=0.5, maxval=5.0, step=0.5, group=grpP5)
+p5Tp2RR         = input.float(3.0, "M5: TP2 (× R)", minval=1.0, maxval=6.0, step=0.5, group=grpP5)
+p5Session       = input.string("لندن/نیویورک", "M5: Session Filter", options=["Kill Zone", "لندن/نیویورک", "همه سشن‌ها"], group=grpP5)
+p5MaxSpreadFrac = input.float(0.08, "M5: Maximum Spread (کسر از فاصله SL)", minval=0.01, maxval=0.5, step=0.01, group=grpP5)
+p5Conf          = input.string("OR", "M5: Entry Confirmation", options=["OR", "AND"], group=grpP5, tooltip="OR: Micro BOS یا کندل برگشتی کافی است. AND: هر دو لازم‌اند.")
+p5CooldownMin   = input.int(15, "M5: Cooldown بعد از SL (دقیقه، ۰ = خاموش)", minval=0, maxval=1440, group=grpP5)
+p5MaxHoldMin    = input.int(120, "M5: Maximum Holding Time (دقیقه، ۰ = خاموش)", minval=0, maxval=10080, group=grpP5)
+
+// ── پروفایل M15 (پیش‌تنظیم Balanced) ──
+p15AtrLen        = input.int(14, "M15: ATR Length", minval=5, maxval=50, group=grpP15)
+p15ObLookback    = input.int(20, "M15: OB Lookback (کندل)", minval=5, maxval=50, group=grpP15)
+p15ObExpMin      = input.int(1440, "M15: OB Expiration (دقیقه)", minval=5, maxval=10080, group=grpP15)
+p15ObDisp        = input.float(1.25, "M15: OB Displacement Threshold (× ATR)", minval=0.3, maxval=3.0, step=0.05, group=grpP15)
+p15MinScore      = input.int(65, "M15: Minimum OB Score (۰ تا ۱۰۰)", minval=0, maxval=100, group=grpP15)
+p15FractalLen    = input.int(2, "M15: Fractal Length", minval=1, maxval=5, group=grpP15)
+p15FvgDirOnly    = input.bool(true, "M15: FVG فقط هم‌جهت", group=grpP15)
+p15SweepLookback = input.int(5, "M15: Sweep Lookback (کندل)", minval=1, maxval=20, group=grpP15)
+p15MaxSetupAgeMin = input.int(90, "M15: Maximum Setup Age (دقیقه)", minval=1, maxval=1440, group=grpP15)
+p15SlBuffer      = input.float(0.3, "M15: Stop Loss Buffer (× ATR)", minval=0.0, maxval=1.0, step=0.05, group=grpP15)
+p15Tp1RR         = input.float(2.0, "M15: TP1 (× R)", minval=0.5, maxval=5.0, step=0.5, group=grpP15)
+p15Tp2RR         = input.float(3.0, "M15: TP2 (× R)", minval=1.0, maxval=6.0, step=0.5, group=grpP15)
+p15Session       = input.string("لندن/نیویورک", "M15: Session Filter", options=["Kill Zone", "لندن/نیویورک", "همه سشن‌ها"], group=grpP15)
+p15MaxSpreadFrac = input.float(0.10, "M15: Maximum Spread (کسر از فاصله SL)", minval=0.01, maxval=0.5, step=0.01, group=grpP15)
+p15Conf          = input.string("OR", "M15: Entry Confirmation", options=["OR", "AND"], group=grpP15, tooltip="OR: Micro BOS یا کندل برگشتی کافی است. AND: هر دو لازم‌اند.")
+p15CooldownMin   = input.int(45, "M15: Cooldown بعد از SL (دقیقه، ۰ = خاموش)", minval=0, maxval=1440, group=grpP15)
+p15MaxHoldMin    = input.int(480, "M15: Maximum Holding Time (دقیقه، ۰ = خاموش)", minval=0, maxval=10080, group=grpP15)
+
+// فرکتال
+showFractal = input.bool(true, "نمایش فرکتال", group=grpFrac)
+
+// اردر بلاک
+showOB      = input.bool(true, "نمایش اردر بلاک", group=grpOB)
+obMaxTotal  = input.int(6, "حداکثر باکس اردر بلاک در مجموع (هر دو جهت)", minval=2, maxval=12, group=grpOB)
+obExtend    = input.int(30, "تمدید باکس (کندل)", minval=5, maxval=100, group=grpOB)
+showOBScore = input.bool(true, "نمایش امتیاز روی اردر بلاک", group=grpOB)
+structLookback = input.int(5, "مهلت تأیید ساختار برای امتیاز OB (کندل)", minval=1, maxval=20, group=grpOB, tooltip="BOS یا CHoCH تا این‌قدر کندل قبل از ساخت OB هم برای امتیاز ساختار حساب می‌شود؛ فقط رویداد همان کندل حساب نمی‌شود.")
+obFirstTouchOnly = input.bool(false, "فقط اولین لمس OB ستاپ بسازد", group=grpOB, tooltip="روشن باشد: بعد از اولین لمس یک اردر بلاک، لمس‌های بعدی آن ناحیه دیگر ستاپ نمی‌سازند. خاموش باشد: هر بار که قیمت وارد ناحیه شود و دوباره بیرون برود، لمس دوباره حساب می‌شود (حالت Retest).")
+obRetestMode = input.bool(false, "حالت Retest: لمس دوباره OB بعد از دور شدن، ستاپ تازه بسازد", group=grpOB, tooltip="روشن باشد: لمس‌های بعدی یک ناحیه هم ستاپ می‌سازند، به شرط اینکه قیمت حداقل retestMinBars کندل از ناحیه دور شده و برگشته باشد. اگر FirstTouchOnly هم روشن باشد، FirstTouchOnly اولویت دارد.")
+retestMinBars = input.int(3, "حداقل دوری قیمت از ناحیه برای Retest (کندل)", minval=1, maxval=20, group=grpOB)
+
+// گپ ارزش منصفانه
+showFVG     = input.bool(true, "نمایش گپ ارزش منصفانه", group=grpFVG)

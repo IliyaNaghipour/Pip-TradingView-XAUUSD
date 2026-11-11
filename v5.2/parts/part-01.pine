@@ -1,0 +1,150 @@
+alBOSBull = input.bool(true, "هشدار BOS صعودی", group=grpAlert)
+alBOSBear = input.bool(true, "هشدار BOS نزولی", group=grpAlert)
+alCHBull  = input.bool(true, "هشدار CHoCH صعودی", group=grpAlert)
+alCHBear  = input.bool(true, "هشدار CHoCH نزولی", group=grpAlert)
+alSwpBull = input.bool(true, "هشدار جاروی نقدینگی صعودی", group=grpAlert)
+alSwpBear = input.bool(true, "هشدار جاروی نقدینگی نزولی", group=grpAlert)
+alFVGBull = input.bool(true, "هشدار ساخت گپ صعودی", group=grpAlert)
+alFVGBear = input.bool(true, "هشدار ساخت گپ نزولی", group=grpAlert)
+al123Bull = input.bool(true, "هشدار ۱-۲-۳ صعودی", group=grpAlert)
+al123Bear = input.bool(true, "هشدار ۱-۲-۳ نزولی", group=grpAlert)
+alFlgBull = input.bool(true, "هشدار پرچم صعودی (آزمایشی)", group=grpAlert)
+alFlgBear = input.bool(true, "هشدار پرچم نزولی (آزمایشی)", group=grpAlert)
+alOrderFill = input.bool(true, "هشدار پر شدن سفارش (ورود و بسته‌شدن معامله)", group=grpAlert, tooltip="هشدار جداگانه برای ورود و بسته‌شدن واقعی معامله؛ با هشدارهای تحلیلی (OB، BOS و...) فرق دارد.")
+
+// ───────────────────────── انواع داده (UDT) ─────────────────────────
+type OBZone
+    box b
+    float top
+    float bottom
+    int dir
+    int id
+    float score
+    float baseScore
+    bool touched
+    bool inZone
+    bool mitigated
+    bool invalid
+    int bar
+
+type FVGZone
+    box b
+    float top
+    float bottom
+    int dir
+    int id
+    float fillPct
+    bool mitigated
+    bool invalid
+    bool fillShown
+    int bar
+
+// ───────────────────────── هسته: ATR، EMA، روند ─────────────────────────
+atr     = ta.atr(14)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+bool atrOk = not na(atr) and atr > 0
+trendUp   = close > emaFast and emaFast > emaSlow
+trendDown = close < emaFast and emaFast < emaSlow
+trendState = trendUp ? 1 : trendDown ? -1 : 0
+
+// روند HTF فقط از کندل تأییدشده قبلی: close[1] با lookahead_on یعنی
+// مقدار کندل H1 که کامل بسته شده است؛ پس Repaint ندارد، ولی یک کندل H1 تأخیر دارد.
+[htfClose, htfEmaF, htfEmaS] = request.security(syminfo.tickerid, htfTF, [close[1], ta.ema(close, emaFastLen)[1], ta.ema(close, emaSlowLen)[1]], lookahead=barmerge.lookahead_on)
+htfTrend = htfClose > htfEmaF and htfEmaF > htfEmaS ? 1 : htfClose < htfEmaF and htfEmaF < htfEmaS ? -1 : 0
+htfValid = timeframe.in_seconds(htfTF) >= timeframe.in_seconds(timeframe.period)
+// HTF نامعتبر (تایم‌فریم چارت از HTF بزرگ‌تر است) دیگر بی‌سروصدا با روند چارت
+// جایگزین نمی‌شود: اگر htfFallback روشن باشد، روند چارت با برچسب «نامعتبر — روند چارت»
+// در داشبورد جای HTF می‌نشیند؛ اگر خاموش باشد، HTF خنثی (۰) فرض می‌شود و چون ورود
+// فقط با هم‌راستایی «دقیق» HTF انجام می‌شود، معامله‌ای باز نمی‌شود.
+htfTrendSafe = htfValid ? htfTrend : htfFallback ? trendState : 0
+// بازه بک‌تست نیمه‌باز [شروع، پایان): پایان ۲۰۳۰-۰۱-۰۱ یعنی تا آخر ۲۰۲۹ حساب می‌شود؛
+// پس پیش‌فرض پایان بک‌تست بلافاصله بعد از نصب منقضی نمی‌شود.
+inRange = time >= startDate and time < endDate
+
+// نکته Pine: تابع plot() فقط در بدنه اصلی (global scope) مجاز است و نمی‌تواند
+// داخل if باشد (خطای CE10188). پس نمایش EMA با سری شرطی کنترل می‌شود، نه با if.
+plot(showL1 ? emaFast : na, "EMA سریع", color=color.new(color.blue, 0))
+plot(showL1 ? emaSlow : na, "EMA کند", color=color.new(color.orange, 0))
+
+// ───────────────────────── سشن‌ها (Timezone واقعی، DST با موتور TradingView) ─────────────────────────
+// سشن‌های «واقعی» (بدون ورودی نمایش) برای امتیاز OB و نام سشن استفاده می‌شوند؛
+// ورودی‌های showAsia و ... فقط پس‌زمینه را کنترل می‌کنند.
+inAsiaRaw   = not na(time(timeframe.period, "0000-0600", "Asia/Tokyo"))
+inLondonRaw = not na(time(timeframe.period, "0800-1630", "Europe/London"))
+inNyRaw     = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+inLdnKzRaw  = not na(time(timeframe.period, "0700-0900", "Europe/London"))
+inNyKzRaw   = not na(time(timeframe.period, "0700-0900", "America/New_York"))
+inAsia   = showAsia and inAsiaRaw
+inLondon = showLondon and inLondonRaw
+inNY     = showNY and inNyRaw
+inLdnKZ  = showKillZone and inLdnKzRaw
+inNyKZ   = showKillZone and inNyKzRaw
+sessName = inLdnKzRaw ? "لندن KZ" : inNyKzRaw ? "نیویورک KZ" : inLondonRaw ? "لندن" : inNyRaw ? "نیویورک" : inAsiaRaw ? "آسیا" : "—"
+inAnySess = inAsiaRaw or inLondonRaw or inNyRaw or inLdnKzRaw or inNyKzRaw
+sessScoreBonus = inLdnKzRaw or inNyKzRaw ? 5.0 : inAnySess ? 2.0 : 0.0
+
+bgcolor(showSessBG and inLdnKZ ? color.new(color.purple, 93) : showSessBG and inNyKZ ? color.new(color.blue, 93) : showSessBG and inLondon ? color.new(color.teal, 94) : showSessBG and inNY ? color.new(color.orange, 94) : showSessBG and inAsia ? color.new(color.gray, 94) : na, title="پس‌زمینه سشن")
+
+// سقف / کف سشن جاری
+var float sessHi = na
+var float sessLo = na
+var string sessKey = ""
+sessKeyNow = inLdnKzRaw ? "LKZ" : inNyKzRaw ? "NKZ" : inLondonRaw ? "LDN" : inNyRaw ? "NY" : inAsiaRaw ? "ASIA" : ""
+if sessKeyNow != "" and sessKeyNow != sessKey
+    sessKey := sessKeyNow
+    sessHi := high
+    sessLo := low
+if sessKeyNow != ""
+    sessHi := math.max(sessHi, high)
+    sessLo := math.min(sessLo, low)
+plot(showSessHL and showL2 and not na(sessHi) ? sessHi : na, "سقف سشن", color=color.new(color.gray, 20), style=plot.style_linebr)
+plot(showSessHL and showL2 and not na(sessLo) ? sessLo : na, "کف سشن", color=color.new(color.gray, 20), style=plot.style_linebr)
+
+// ───────────────────────── فرکتال — دقیقاً روی Pivot ─────────────────────────
+ph = ta.pivothigh(high, fractalLen, fractalLen)
+pl = ta.pivotlow(low, fractalLen, fractalLen)
+
+var label[] evtLabels = array.new_label()
+var float lastPh = na
+var float lastPl = na
+var float prevPh = na
+var float prevPl = na
+
+// ردیابی سوئینگ همیشه انجام می‌شود، حتی اگر نمایش فرکتال خاموش باشد؛
+// چون BOS و CHoCH و Premium/Discount به همین سوئینگ‌ها وابسته‌اند.
+if not na(ph) and barstate.isconfirmed
+    prevPh := lastPh
+    lastPh := ph
+    if showFractal and showL2
+        label lb = label.new(bar_index - fractalLen, ph, "▼", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.red, 100), textcolor=color.new(color.red, 0), size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+if not na(pl) and barstate.isconfirmed
+    prevPl := lastPl
+    lastPl := pl
+    if showFractal and showL2
+        label lb = label.new(bar_index - fractalLen, pl, "▲", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.green, 100), textcolor=color.new(color.green, 0), size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+
+// ───────────────────────── ساختار بازار: BOS / CHoCH ─────────────────────────
+// موتور ساختار همیشه اجرا می‌شود (روی امتیاز OB و داشبورد اثر دارد)؛
+// فقط «لیبل»‌ها با لایه ۱ کنترل می‌شوند.
+// هر سوئینگ بعد از شکست، وضعیت broken می‌گیرد و دوباره سیگنال نمی‌دهد.
+// CHoCH بر اساس جهت ساختار قبلی است، نه EMA.
+var int structState = 0
+var bool swingHiBroken = false
+var bool swingLoBroken = false
+var string lastStruct = "—"
+bool bosUpEvt = false
+bool bosDnEvt = false
+bool chochUpEvt = false
+bool chochDnEvt = false
+
+if not na(ph)
+    swingHiBroken := false
+if not na(pl)
+    swingLoBroken := false

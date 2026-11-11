@@ -1,0 +1,8 @@
+
+// هشدار پر شدن سفارش — جدا از هشدارهای تحلیلی.
+// ورود: در کندل ورود و وقتی معامله واقعاً باز شد (tradeActive).
+// بسته‌شدن: در کندلی که پوزیشن واقعاً صفر شد (tradeJustClosed).
+if alOrderFill and setupStoredNow and tradeActive
+    alert("پیپ ۵٫۲ | " + alSym + "ورود معامله " + (tradeDir == 1 ? "خرید" : "فروش") + " | " + tradeSrc + " | ورود " + str.tostring(tradeEntry, format.mintick) + " | حد ضرر " + str.tostring(tradeSL, format.mintick), alert.freq_once_per_bar_close)
+if alOrderFill and tradeJustClosed
+    alert("پیپ ۵٫۲ | " + alSym + "معامله بسته شد | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)

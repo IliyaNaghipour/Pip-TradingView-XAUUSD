@@ -1,0 +1,150 @@
+        else if not na(pl) and pl < sP2
+            sP2 := pl
+        else if not na(ph) and ph >= sP1
+            // سقف جدید بالاتر از نقطه ۱: نقطه ۱ شکسته شد، الگو باطل است.
+            sStage := 5
+        else if close > sP1
+            sStage := 5
+    else if sStage == 3
+        if close < sP2
+            bear123Evt := true
+            sStage := 4
+        else if not na(ph) and ph > sP1
+            // پیوت جدید بالاتر از نقطه ۱: نقطه ۱ شکسته شد، الگو باطل است.
+            sStage := 5
+        else if close > sP1
+            sStage := 5
+    else if sStage == 4 or sStage == 5
+        sStage := 0
+        sP1 := na
+        sP2 := na
+        sP3 := na
+        sP1Bar := na
+
+if bull123Evt and showL1
+    label lb = label.new(bar_index, low, "123", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.tiny)
+    array.push(evtLabels, lb)
+    if array.size(evtLabels) > maxLabels
+        label.delete(array.shift(evtLabels))
+if bear123Evt and showL1
+    label lb = label.new(bar_index, high, "123", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+    array.push(evtLabels, lb)
+    if array.size(evtLabels) > maxLabels
+        label.delete(array.shift(evtLabels))
+
+// ───────────────────────── پرچم — آزمایشی (Experimental) ─────────────────────────
+// پنجره‌ها «بدون هم‌پوشانی» و فقط روی کندل‌های تکمیل‌شده:
+//  - میله: حرکت ۵ کندله از close[11] تا close[6] (کندل‌های ۶ تا ۱۱)؛
+//  - اصلاح: ۵ کندل تکمیل‌شده قبل (کندل‌های ۱ تا ۵)؛ سقف/کف اصلاح از high[1] و low[1]؛
+//  - شکست: بسته‌شدن کندل جاری آن‌طرف بازه اصلاح.
+// اصلاحیه نسبت به ۵٫۱: در ۵٫۱ سقف/کف اصلاح با ta.highest(high, 5) حساب می‌شد که کندل
+// جاری را هم شامل می‌شد؛ چون high همیشه ≥ close است، شرط close > consHi «غیرممکن» بود
+// و پرچم صعودی هرگز نمی‌توانست سیگنال بدهد (نزولی هم همین‌طور). حالا پنجره اصلاح فقط
+// کندل‌های تکمیل‌شده است، پس شکست واقعاً ممکن است.
+// باطل‌شدن: اگر کندل قبلی از طرف مخالف بازه اصلاح خارج شده باشد، پرچم باطل است.
+// تشخیص پرچم ذاتاً قطعی نیست؛ به همین دلیل این بخش آزمایشی است و سیگنال معاملاتی نیست.
+bool bullFlagEvt = false
+bool bearFlagEvt = false
+float poleUp   = close[6] - close[11]
+float poleDown = close[11] - close[6]
+float consHi = ta.highest(high[1], 5)
+float consLo = ta.lowest(low[1], 5)
+float consRange = consHi - consLo
+if showFlag and barstate.isconfirmed
+    if poleUp > atr * flagPoleATR and consRange < poleUp * flagMaxRet and close > consHi and close[1] <= consHi and low[1] >= consLo
+        bullFlagEvt := true
+        if showL1
+            label lb = label.new(bar_index, low, "FLAG?", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.tiny)
+            array.push(evtLabels, lb)
+            if array.size(evtLabels) > maxLabels
+                label.delete(array.shift(evtLabels))
+    if poleDown > atr * flagPoleATR and consRange < poleDown * flagMaxRet and close < consLo and close[1] >= consLo and high[1] <= consHi
+        bearFlagEvt := true
+        if showL1
+            label lb = label.new(bar_index, high, "FLAG?", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.maroon, 0), textcolor=color.white, size=size.tiny)
+            array.push(evtLabels, lb)
+            if array.size(evtLabels) > maxLabels
+                label.delete(array.shift(evtLabels))
+
+// ───────────────────────── Premium / Discount — از سوئینگ‌های تأییدشده ─────────────────────────
+float swingHi = na(lastPh) ? na : lastPh
+float swingLo = na(lastPl) ? na : lastPl
+float eqLevel = not na(swingHi) and not na(swingLo) ? (swingHi + swingLo) / 2.0 : na
+plot(showL2 and not na(eqLevel) ? eqLevel : na, "خط تعادل ۵۰٪", color=color.new(color.gray, 30), style=plot.style_linebr)
+var label premLabel = na
+var label discLabel = na
+if showL2 and barstate.islast and not na(swingHi) and not na(swingLo)
+    if na(premLabel)
+        premLabel := label.new(bar_index, swingHi, "گران", style=label.style_label_down, color=color.new(color.red, 85), textcolor=color.white, size=size.tiny)
+        discLabel := label.new(bar_index, swingLo, "ارزان", style=label.style_label_up, color=color.new(color.green, 85), textcolor=color.white, size=size.tiny)
+    else
+        label.set_xy(premLabel, bar_index, swingHi)
+        label.set_xy(discLabel, bar_index, swingLo)
+if not showL2 and not na(premLabel)
+    label.delete(premLabel)
+    label.delete(discLabel)
+    premLabel := na
+    discLabel := na
+
+// ───────────────────────── مدیریت ریسک — ستاپ در انتظار و معامله باز، جدا ─────────────────────────
+// دو حالت مستقل (بازبینی ۵٫۲):
+//  الف) ستاپ در انتظار (pend*): آخرین ستاپ معتبر؛ با هر ستاپ جدید عوض می‌شود.
+//  ب) معامله باز (trade*): سطوح «قفل‌شده» معامله‌ای که واقعاً باز شده است؛ ستاپ جدید
+//     هرگز آن‌ها را عوض نمی‌کند و فقط وقتی پوزیشن واقعاً بسته شد ریست می‌شوند.
+// خطوط روی چارت: وقتی معامله باز است، سطوح قفل‌شده معامله را نشان می‌دهند؛ وقتی
+// پوزیشنی باز نیست، ستاپ در انتظار را نشان می‌دهند.
+var line slLine = na
+var line tp1Line = na
+var line tp2Line = na
+var label riskLabel = na
+// الف) ستاپ در انتظار
+var bool pendActive = false
+var int pendDir = 0
+var float pendEntry = na
+var float pendSL = na
+var float pendTP1 = na
+var float pendTP2 = na
+var int pendId = na
+var string pendSrc = ""
+// ب) معامله باز
+var bool tradeActive = false
+var int tradeDir = 0
+var float tradeEntry = na
+var float tradeSL = na
+var float tradeTP1 = na
+var float tradeTP2 = na
+var int tradeId = na
+var string tradeSrc = ""
+var bool tradeTP1Done = false
+var int tradeEntryBar = na
+
+bool newSetup = false
+int newSetupDir = 0
+float newSetupEntry = na
+float newSetupSL = na
+int newSetupId = na
+string newSetupSrc = ""
+bool setupStoredNow = false
+if barstate.isconfirmed
+    // ورود فقط با هم‌راستایی «دقیق» HTF انجام می‌شود: صعودی فقط وقتی HTF ‏۱ است،
+    // نزولی فقط وقتی HTF ‏-۱ است. HTF خنثی (۰) هیچ ستاپی نمی‌سازد.
+    if obBullTouchEvt and touchBullScore >= minOBScore and htfTrendSafe == 1 and (not pendActive or pendId != touchBullId)
+        newSetup := true
+        newSetupDir := 1
+        newSetupEntry := close
+        newSetupSL := touchBullBot - atr * atrBuffer
+        newSetupId := touchBullId
+        newSetupSrc := "OB+"
+    else if obBearTouchEvt and touchBearScore >= minOBScore and htfTrendSafe == -1 and (not pendActive or pendId != touchBearId)
+        newSetup := true
+        newSetupDir := -1
+        newSetupEntry := close
+        newSetupSL := touchBearTop + atr * atrBuffer
+        newSetupId := touchBearId
+        newSetupSrc := "OB-"
+    else if bull123Evt and htfTrendSafe == 1 and not na(bP3)
+        newSetup := true
+        newSetupDir := 1
+        newSetupEntry := close
+        newSetupSL := bP3 - atr * atrBuffer
+        newSetupId := -1

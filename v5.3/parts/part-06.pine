@@ -1,0 +1,150 @@
+if barstate.isconfirmed and array.size(obZones) > 0
+    for i = array.size(obZones) - 1 to 0
+        OBZone z = array.get(obZones, i)
+        if bar_index - z.bar > effObExpBars
+            if not na(z.b)
+                box.delete(z.b)
+            array.remove(obZones, i)
+
+// به‌روزرسانی OBها — فقط روی کندل تأییدشده (مثل بک‌تست ۴٫۴).
+// Touch با هم‌پوشانی واقعی، Mitigation، Invalidation.
+// اگر چند ناحیه هم‌زمان لمس شدند، پرامتیازترین سیگنال همان کندل است (نه جدیدترین).
+float bestObScore = na
+if barstate.isconfirmed and array.size(obZones) > 0
+    for i = array.size(obZones) - 1 to 0
+        OBZone z = array.get(obZones, i)
+        if not na(z.b)
+            box.set_right(z.b, bar_index + obExtend)
+        // امتیاز پایه زنده (L-13) + تازگی؛ تازگی با گذشت زمان خطی کم می‌شود.
+        z.baseScore := f_obScoreLive(z)
+        z.score := z.baseScore + f_freshScore(bar_index - z.bar, effObExpBars)
+        bool overlap = f_overlap(low, high, z.bottom, z.top)
+        bool invalidNow = z.dir == 1 ? close < z.bottom : close > z.top
+        if invalidNow
+            z.invalid := true
+            if not na(z.b)
+                box.delete(z.b)
+            // FVGهای مرتبط با این OB هم «نامعتبر» علامت می‌خورند (نه حذف).
+            if array.size(fvgZones) > 0
+                for j = 0 to array.size(fvgZones) - 1
+                    FVGZone fz = array.get(fvgZones, j)
+                    if not na(fz.obId) and fz.obId == z.id
+                        fz.obInvalid := true
+            array.remove(obZones, i)
+        else
+            if overlap
+                // obFirstTouchOnly روشن: لمس دوم به بعدِ یک ناحیه ستاپ نمی‌سازد.
+                if not z.inZone and (not obFirstTouchOnly or not z.touched)
+                    z.inZone := true
+                    z.touched := true
+                    z.mitigated := true
+                    string lbl = z.dir == 1 ? "OB+" : "OB-"
+                    if showOBScore
+                        lbl := lbl + " " + str.tostring(math.round(z.score))
+                    if showOB and showL1
+                        label lb = label.new(bar_index, z.dir == 1 ? low : high, lbl, xloc=xloc.bar_index, style=z.dir == 1 ? label.style_label_up : label.style_label_down, color=z.dir == 1 ? color.new(color.green, 0) : color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+                        array.push(evtLabelsL1, lb)
+                        if array.size(evtLabelsL1) > maxLabels
+                            label.delete(array.shift(evtLabelsL1))
+                    if z.dir == 1
+                        if na(touchBullScore) or z.score > touchBullScore
+                            obBullTouchEvt := true
+                            touchBullId := z.id
+                            touchBullTop := z.top
+                            touchBullBot := z.bottom
+                            touchBullScore := z.score
+                    else
+                        if na(touchBearScore) or z.score > touchBearScore
+                            obBearTouchEvt := true
+                            touchBearId := z.id
+                            touchBearTop := z.top
+                            touchBearBot := z.bottom
+                            touchBearScore := z.score
+            else
+                if z.inZone
+                    z.exitBar := bar_index
+                z.inZone := false
+            if z.score >= effMinOBScore and (na(bestObScore) or z.score > bestObScore)
+                bestObScore := z.score
+            // ناحیه کم‌امتیاز در حالت پیش‌فرض دیده نمی‌شود
+            if not na(z.b)
+                box.set_bgcolor(z.b, z.score >= effMinOBScore ? (z.dir == 1 ? color.new(color.green, 82) : color.new(color.red, 82)) : color.new(color.gray, 90))
+
+// اگر نمایش OB خاموش شد، فقط باکس‌ها پاک شوند — ناحیه‌ها برای بک‌تست می‌مانند.
+// با روشن‌کردن دوباره نمایش، باکس ناحیه‌های زنده از روی هندسه ذخیره‌شده بازسازی
+// می‌شود (L-2) — رنگ باکس در حلقه به‌روزرسانی بعدی اصلاح می‌شود.
+if (not showOB or not showL1) and array.size(obZones) > 0
+    for i = array.size(obZones) - 1 to 0
+        OBZone z = array.get(obZones, i)
+        if not na(z.b)
+            box.delete(z.b)
+            z.b := na
+if (showOB and showL1) and array.size(obZones) > 0
+    for i = array.size(obZones) - 1 to 0
+        OBZone z = array.get(obZones, i)
+        if na(z.b) and not z.invalid
+            z.b := box.new(z.bar, z.top, bar_index + obExtend, z.bottom, bgcolor=z.dir == 1 ? color.new(color.green, 82) : color.new(color.red, 82), border_color=z.dir == 1 ? color.new(color.green, 0) : color.new(color.red, 0), border_width=1)
+
+// ───────────────────────── الگوی ۱-۲-۳ — State Machine ─────────────────────────
+// حالت‌ها: ۰=انتظار نقطه ۱، ۱=انتظار نقطه ۲، ۲=انتظار نقطه ۳، ۳=انتظار تأیید،
+// ۴=تأییدشده (یک کندل)، ۵=باطل‌شده (یک کندل و بعد ریست)
+// نکته مهم: پیوت‌ها (ta.pivothigh/low) فقط effFractalLen (پروفایل) کندل «بعد» از سوئینگ تأیید می‌شوند؛
+// پس نقطه‌ها و سیگنال همیشه با تأخیر ثبت می‌شوند، نه روی کندل سوئینگ. سیگنال ۱-۲-۳
+// در لحظه تأیید (شکست نقطه ۲ با بسته‌شدن کندل) صادر می‌شود، نه عقب‌تر — Repaint ندارد.
+var float bP1 = na
+var float bP2 = na
+var float bP3 = na
+var int bStage = 0
+var int bP1Bar = na
+var float sP1 = na
+var float sP2 = na
+var float sP3 = na
+var int sStage = 0
+var int sP1Bar = na
+// کیفیت ۱-۲-۳ در لحظه تأیید (۵۰ پایه + ۱۰ جارو در پنجره + ۱۰ هم‌پوشانی FVG در
+// P3 + ‏۱۰ هم‌راستایی کامل ستاپ) و علامت جارو در پنجره الگو.
+var bool bSweepWin = false
+var bool sSweepWin = false
+var float b123Qual = na
+var float s123Qual = na
+bool bull123Evt = false
+bool bear123Evt = false
+
+// جارو در پنجره الگو: جاروی سوئینگ مخالف‌جهت، وقتی الگو در جریان است.
+// (برای الگوی صعودی، جاروی کف؛ برای الگوی نزولی، جاروی سقف.)
+if show123 and barstate.isconfirmed
+    if bStage != 0 and sweepDnEvt
+        bSweepWin := true
+    if sStage != 0 and sweepUpEvt
+        sSweepWin := true
+
+// صعودی: نقطه ۱ = سوئینگ Low، نقطه ۲ = سوئینگ High، نقطه ۳ = Higher Low، تأیید = شکست نقطه ۲
+if show123 and barstate.isconfirmed
+    // حداکثر عمر الگو: اگر از نقطه ۱ تا تأیید بیش از max123Age کندل بگذرد، الگو باطل می‌شود.
+    if bStage != 0 and not na(bP1Bar) and bar_index - bP1Bar > max123Age
+        bStage := 5
+    if bStage == 0
+        if not na(pl)
+            bP1 := pl
+            bP1Bar := bar_index
+            bSweepWin := false
+            b123Qual := na
+            bStage := 1
+    else if bStage == 1
+        // L-10: اگر در یک کندل هم پیوت High و هم پیوت Low تأیید شوند، هر دو
+        // پردازش می‌شوند — اول Low (به‌روزرسانی نقطه ۱)، بعد High (پیشروی).
+        if not na(pl) and pl < bP1
+            bP1 := pl
+            bP1Bar := bar_index
+        if not na(ph) and ph > bP1
+            bP2 := ph
+            bStage := 2
+    else if bStage == 2
+        if not na(pl) and pl > bP1 and pl < bP2
+            bP3 := pl
+            bStage := 3
+        else if not na(ph) and ph > bP2
+            bP2 := ph
+        else if not na(pl) and pl <= bP1
+            // کف جدید پایین‌تر از نقطه ۱: نقطه ۱ شکسته شد، الگو باطل است.
+            bStage := 5

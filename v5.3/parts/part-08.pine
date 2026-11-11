@@ -1,0 +1,150 @@
+        bearFlagBar := bar_index
+        if showL1
+            if not na(bearFlagLbl)
+                label.delete(bearFlagLbl)
+            bearFlagLbl := label.new(bar_index, high, "FLAG?", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.maroon, 0), textcolor=color.white, size=size.tiny)
+
+// L-8: حداکثر عمر سیگنال — بعد از flagMaxAge کندل، برچسب پرچم حذف می‌شود.
+// اگر لایه ۱ خاموش باشد، برچسب‌های پرچم هم حذف می‌شوند (L-3).
+if barstate.isconfirmed
+    if not na(bullFlagLbl) and (not showL1 or bar_index - bullFlagBar > flagMaxAge)
+        label.delete(bullFlagLbl)
+        bullFlagLbl := na
+    if not na(bearFlagLbl) and (not showL1 or bar_index - bearFlagBar > flagMaxAge)
+        label.delete(bearFlagLbl)
+        bearFlagLbl := na
+
+// لیبل‌های لایه‌ها (L-3): با خاموش‌کردن یک لایه، همه لیبل‌های همان لایه حذف
+// می‌شوند — نه فقط با رسیدن به سقف maxLabels.
+if not showL1 and array.size(evtLabelsL1) > 0
+    for i = array.size(evtLabelsL1) - 1 to 0
+        label.delete(array.get(evtLabelsL1, i))
+    array.clear(evtLabelsL1)
+if not showL2 and array.size(evtLabelsL2) > 0
+    for i = array.size(evtLabelsL2) - 1 to 0
+        label.delete(array.get(evtLabelsL2, i))
+    array.clear(evtLabelsL2)
+// ───────────────────────── Premium / Discount — از سوئینگ‌های تأییدشده ─────────────────────────
+float swingHi = na(lastPh) ? na : lastPh
+float swingLo = na(lastPl) ? na : lastPl
+float eqLevel = not na(swingHi) and not na(swingLo) ? (swingHi + swingLo) / 2.0 : na
+plot(showL2 and not na(eqLevel) ? eqLevel : na, "خط تعادل ۵۰٪", color=color.new(color.gray, 30), style=plot.style_linebr)
+var label premLabel = na
+var label discLabel = na
+if showL2 and barstate.islast and not na(swingHi) and not na(swingLo)
+    if na(premLabel)
+        premLabel := label.new(bar_index, swingHi, "گران", style=label.style_label_down, color=color.new(color.red, 85), textcolor=color.white, size=size.tiny)
+        discLabel := label.new(bar_index, swingLo, "ارزان", style=label.style_label_up, color=color.new(color.green, 85), textcolor=color.white, size=size.tiny)
+    else
+        label.set_xy(premLabel, bar_index, swingHi)
+        label.set_xy(discLabel, bar_index, swingLo)
+if not showL2 and not na(premLabel)
+    label.delete(premLabel)
+    label.delete(discLabel)
+    premLabel := na
+    discLabel := na
+
+// ───────────────────────── کنترل‌های ریسک — دروازه ورود ─────────────────────────
+// همه این کنترل‌ها پیش‌فرض خاموش‌اند (۰ یا خاموش)؛ پس رفتار پیش‌فرض مثل ۵٫۱ می‌ماند.
+// آرایه‌های شناسه‌دار (§۷٫۱): به‌جای آرایه‌های موازی اندیسی ۵٫۲ که فقط با ترتیب
+// ورود کار می‌کردند؛ جست‌وجو با شناسه تجزیه‌شده از کامنت ورود انجام می‌شود،
+// نه با اندیس حلقه. اگر تجزیه ناموفق باشد، معامله «تطبیق‌نیافته» شمرده می‌شود.
+var int[] idList = array.new_int()
+var float[] riskById = array.new_float()
+var string[] srcById = array.new_string()
+var int[] sessById = array.new_int()
+var int[] monthById = array.new_int()
+var float[] adxById = array.new_float()
+var float[] qtyById = array.new_float()
+var int[] tp1Ids = array.new_int()
+var float dayStartEq = na
+var int tradesToday = 0
+var int consecLosses = 0
+var int lastClosedN = 0
+var int lastSLBar = na
+if na(dayStartEq) or ta.change(time("D")) != 0
+    dayStartEq := strategy.equity
+    tradesToday := 0
+// ردیابی معاملات بسته‌شده: وقتی تعدادشان بیشتر شد، نتیجه آخرین معامله خوانده می‌شود.
+int closedN = strategy.closedtrades
+if closedN > lastClosedN
+    float lastP = strategy.closedtrades.profit(closedN - 1)
+    string lastXc = strategy.closedtrades.exit_comment(closedN - 1)
+    if lastP < 0
+        consecLosses += 1
+    else
+        consecLosses := 0
+    if not na(lastXc) and lastXc == "SL"
+        lastSLBar := bar_index
+    lastClosedN := closedN
+float dayLoss = na(dayStartEq) ? 0.0 : dayStartEq - strategy.equity
+bool coolOk = effCooldownBars <= 0 or na(lastSLBar) or bar_index - lastSLBar > effCooldownBars
+bool canTrade = (maxDailyLoss <= 0 or dayLoss < maxDailyLoss) and (maxConsecLosses <= 0 or consecLosses < maxConsecLosses) and (maxTradesPerDay <= 0 or tradesToday < maxTradesPerDay) and coolOk and (minATR <= 0 or (atrOk and atr >= minATR)) and (not tradeOnlyInSession or inLondonRaw or inNyRaw)
+
+
+// ── فیلترهای بازار (بخش ۶) — برای گیت G8 ──
+// رتبه درصدی ATR(14) جاری در ۱۰۰ کندل گذشته: چند درصد کندل‌ها ATR کمتری داشتند.
+int atrBelow = 0
+if bar_index >= 100
+    for i = 1 to 100
+        if atr[i] < atr
+            atrBelow += 1
+float atrRank = bar_index >= 100 ? atrBelow / 100.0 : na
+bool volLow = not na(atrRank) and atrRank < 0.25
+bool volHigh = not na(atrRank) and atrRank > 0.75
+// رژیم نوسان: ورود در نوسان خیلی پایین بلوکه می‌شود؛ در نوسان خیلی بالا فقط
+// اگر blockHighVol روشن باشد. maxATRmult (اگر > ۰) ATR را با میانه ۱۰۰ کندله می‌سنجد.
+bool volOk = not volLow and (not volHigh or not blockHighVol) and (maxATRmult <= 0 or na(ta.median(atr, 100)) or atr <= maxATRmult * ta.median(atr, 100))
+// بازار رنج: EMAها به هم چسبیده‌اند (فاصله کمتر از choppyATRMult × ATR).
+bool choppy = atrOk and math.abs(emaFast - emaSlow) < choppyATRMult * atr
+bool choppyOk = not blockChoppy or not choppy
+// فیلتر سشن پروفایل: Kill Zone فقط در KZ لندن/نیویورک؛ لندن/نیویورک در آن دو
+// سشن؛ «همه سشن‌ها» همیشه مجاز.
+bool sessOk = effSession == "Kill Zone" ? (inLdnKzRaw or inNyKzRaw) : effSession == "لندن/نیویورک" ? (inLondonRaw or inNyRaw) : true
+// نقدینگی پایین: فقط سشن آسیا + رتبه ATR زیر ۱۰٪ — در پروفایل M1/M5 بلوکه
+// می‌شود (مشتق از پروفایل فعال؛ در M15 خاموش است).
+bool effBlockAsiaOnly = profName == "M1" or profName == "M5"
+bool asiaOnly = inAsiaRaw and not inLondonRaw and not inNyRaw
+bool asiaOk = not effBlockAsiaOnly or not asiaOnly or (not na(atrRank) and atrRank >= 0.10)
+// بلوک خبری دستی: در Pine هیچ فید خبری معتبری نیست؛ کاربر خودش قبل از خبر مهم روشن می‌کند.
+bool newsOk = not newsBlock
+// حداکثر پوزیشن باز در ۵٫۳ همیشه ۱ است (مقادیر بزرگ‌تر محدود می‌شوند)؛ ماشین
+// حالت تک‌پوزیشن است و چندپوزیشنی یک تغییر معماری جداست.
+int effMaxOpenPos = math.min(maxOpenPos, 1)
+// گیت G8: اولین دلیل رد، برای نمایش در داشبورد به‌عنوان «دلیل NO TRADE».
+string g8Fail = ""
+bool g8Ok = true
+if not canTrade
+    g8Ok := false
+    g8Fail := "کنترل ریسک"
+else if not volOk
+    g8Ok := false
+    g8Fail := volLow ? "نوسان خیلی پایین" : "نوسان خیلی بالا"
+else if not choppyOk
+    g8Ok := false
+    g8Fail := "بازار رنج"
+else if not sessOk
+    g8Ok := false
+    g8Fail := "خارج از سشن مجاز"
+else if not asiaOk
+    g8Ok := false
+    g8Fail := "فقط آسیا + نقدینگی پایین"
+else if not newsOk
+    g8Ok := false
+    g8Fail := "بلوک خبری دستی"
+
+// ── کمک‌تابع‌های ماشین ستاپ ──
+// شناسه ۶ رقمی با صفر جلویی (مثلاً ۷ ← "000007").
+f_pad6(int n) =>
+    string s = str.tostring(n)
+    if n < 10
+        s := "00000" + s
+    else if n < 100
+        s := "0000" + s
+    else if n < 1000
+        s := "000" + s
+    else if n < 10000
+        s := "00" + s
+    else if n < 100000
+        s := "0" + s
+    s

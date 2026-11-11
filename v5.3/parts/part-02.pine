@@ -1,0 +1,150 @@
+int baseAtrLen = profName == "M1" ? p1AtrLen : profName == "M5" ? p5AtrLen : p15AtrLen
+int baseObLookback = profName == "M1" ? p1ObLookback : profName == "M5" ? p5ObLookback : p15ObLookback
+int baseObExpMin = profName == "M1" ? p1ObExpMin : profName == "M5" ? p5ObExpMin : p15ObExpMin
+float baseObDisp = profName == "M1" ? p1ObDisp : profName == "M5" ? p5ObDisp : p15ObDisp
+int baseMinScore = profName == "M1" ? p1MinScore : profName == "M5" ? p5MinScore : p15MinScore
+int baseFractalLen = profName == "M1" ? p1FractalLen : profName == "M5" ? p5FractalLen : p15FractalLen
+bool baseFvgDirOnly = profName == "M1" ? p1FvgDirOnly : profName == "M5" ? p5FvgDirOnly : p15FvgDirOnly
+int baseSweepLookback = profName == "M1" ? p1SweepLookback : profName == "M5" ? p5SweepLookback : p15SweepLookback
+int baseMaxSetupAgeMin = profName == "M1" ? p1MaxSetupAgeMin : profName == "M5" ? p5MaxSetupAgeMin : p15MaxSetupAgeMin
+float baseSlBuffer = profName == "M1" ? p1SlBuffer : profName == "M5" ? p5SlBuffer : p15SlBuffer
+float baseTp1RR = profName == "M1" ? p1Tp1RR : profName == "M5" ? p5Tp1RR : p15Tp1RR
+float baseTp2RR = profName == "M1" ? p1Tp2RR : profName == "M5" ? p5Tp2RR : p15Tp2RR
+string baseSession = profName == "M1" ? p1Session : profName == "M5" ? p5Session : p15Session
+float baseMaxSpreadFrac = profName == "M1" ? p1MaxSpreadFrac : profName == "M5" ? p5MaxSpreadFrac : p15MaxSpreadFrac
+string baseConf = profName == "M1" ? p1Conf : profName == "M5" ? p5Conf : p15Conf
+int baseCooldownMin = profName == "M1" ? p1CooldownMin : profName == "M5" ? p5CooldownMin : p15CooldownMin
+int baseMaxHoldMin = profName == "M1" ? p1MaxHoldMin : profName == "M5" ? p5MaxHoldMin : p15MaxHoldMin
+
+// مقادیر مؤثر بعد از اعمال ضرایب پیش‌تنظیم
+int effAtrLen = baseAtrLen
+int effObLookback = baseObLookback
+float effObDispATR = baseObDisp * (isConservative ? 1.25 : isAggressive ? 0.80 : 1.0)
+int effMinOBScore = int(math.min(100, math.max(0, baseMinScore + (isConservative ? 10 : isAggressive ? -10 : 0))))
+int effFractalLen = baseFractalLen
+bool effFvgDirOnly = baseFvgDirOnly
+int effSweepLookback = baseSweepLookback
+float effSlBuffer = baseSlBuffer
+float effTp1RR = isAggressive ? 1.5 : baseTp1RR
+float effTp2RR = isAggressive ? 2.5 : baseTp2RR
+string effSession = baseSession
+float effMaxSpreadFrac = baseMaxSpreadFrac * (isConservative ? 0.70 : isAggressive ? 1.30 : 1.0)
+// Conservative: تأیید Micro با AND + جارو الزامی؛ بقیه: طبق تنظیم پروفایل.
+string effConf = isConservative ? "AND" : baseConf
+bool confNeedSweep = isConservative
+// تبدیل پارامترهای زمان‌محور (دقیقه) به کندل چارت؛ ۰ یعنی خاموش.
+int effObExpBars = math.max(1, int(math.round(baseObExpMin * 60.0 / tfSec)))
+int effMaxSetupAgeBars = math.max(1, int(math.round(baseMaxSetupAgeMin * (isConservative ? 0.75 : isAggressive ? 1.5 : 1.0) * 60.0 / tfSec)))
+int effCooldownMin = int(math.round(baseCooldownMin * (isConservative ? 2.0 : isAggressive ? 0.5 : 1.0)))
+int effCooldownBars = effCooldownMin <= 0 ? 0 : math.max(1, int(math.round(effCooldownMin * 60.0 / tfSec)))
+int effMaxHoldMin = baseMaxHoldMin
+int effMaxHoldBars = effMaxHoldMin <= 0 ? 0 : math.max(1, int(math.round(effMaxHoldMin * 60.0 / tfSec)))
+
+// ───────────────────────── هسته: ATR، EMA، روند ─────────────────────────
+atr     = ta.atr(effAtrLen)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+bool atrOk = not na(atr) and atr > 0
+// ADX فقط نمایش + ثبت در لحظه ورود است؛ گیت ورود نیست (مزیتی اثبات نشده است).
+[diPlus, diMinus, adxVal] = ta.dmi(14, 14)
+
+// ───────────────────────── موتور تحلیل چندتایم‌فریمی (MTF) ─────────────────────────
+// الگوی خواندن (همه تایم‌فریم‌ها): request.security با lookahead_on و همه عناصر
+// tuple دارای [1] — یعنی فقط کندل بسته‌شده قبلی آن تایم‌فریم خوانده می‌شود؛
+// بدون Repaint و بدون Lookahead. هیچ request.*ای داخل if نیست (۱۱ فراخوانی از ۴۰).
+// انحراف مستند از طرح §۲٫۳: tuple نه ۷ بلکه ۹ عنصر دارد — دو عنصر اضافه
+// (سوئینگ High/Low «قبلی») برای اینکه روند «ساختاری» W و M (HH+HL / LH+LL،
+// تعریف §۲٫۲ طرح) اصلاً قابل محاسبه باشد؛ با ۷ عنصر فقط آخرین سوئینگ بود و
+// مقایسه با سوئینگ قبلی ممکن نبود. بودجه فراخوانی همان ۱۱ می‌ماند.
+f_mtfTuple() =>
+    float swHi = ta.valuewhen(not na(ta.pivothigh(high, 2, 2)), ta.pivothigh(high, 2, 2), 0)
+    float swHiP = ta.valuewhen(not na(ta.pivothigh(high, 2, 2)), ta.pivothigh(high, 2, 2), 1)
+    float swLo = ta.valuewhen(not na(ta.pivotlow(low, 2, 2)), ta.pivotlow(low, 2, 2), 0)
+    float swLoP = ta.valuewhen(not na(ta.pivotlow(low, 2, 2)), ta.pivotlow(low, 2, 2), 1)
+    [close[1], ta.ema(close, 20)[1], ta.ema(close, 50)[1], swHi[1], swHiP[1], swLo[1], swLoP[1], ta.atr(14)[1], time[1]]
+
+// وضعیت Micro در تایم‌فریم پایین — تابع خالص، فقط روی کندل بسته‌شده قبلی:
+//  - Micro BOS: شکست سقف/کف سوئینگ میکرو دقیقاً در آخرین کندل تأییدشده.
+//  - کندل برگشتی: فتیله ≥ ۲× بدنه و ≥ ۰٫۳× ATR و بدنه هم‌جهت با فتیله مخالف.
+//  - روند EMA ۲۰/۵۰ همان تایم‌فریم پایین + زمان بسته‌شدن کندل.
+f_microState() =>
+    float mSwHi = ta.valuewhen(not na(ta.pivothigh(high, 2, 2)), ta.pivothigh(high, 2, 2), 0)
+    float mSwLo = ta.valuewhen(not na(ta.pivotlow(low, 2, 2)), ta.pivotlow(low, 2, 2), 0)
+    float c1 = close[1]
+    float o1 = open[1]
+    float h1 = high[1]
+    float l1 = low[1]
+    float a1 = ta.atr(14)[1]
+    float e20 = ta.ema(close, 20)[1]
+    float e50 = ta.ema(close, 50)[1]
+    int bos = c1 > mSwHi[1] and close[2] <= mSwHi[1] ? 1 : c1 < mSwLo[1] and close[2] >= mSwLo[1] ? -1 : 0
+    float body = math.abs(c1 - o1)
+    float wickLo = math.min(o1, c1) - l1
+    float wickHi = h1 - math.max(o1, c1)
+    int rej = wickLo >= 2.0 * body and wickLo >= 0.3 * a1 and c1 > o1 ? 1 : wickHi >= 2.0 * body and wickHi >= 0.3 * a1 and c1 < o1 ? -1 : 0
+    int tr = na(e20) or na(e50) ? 0 : c1 > e20 and e20 > e50 ? 1 : c1 < e20 and e20 < e50 ? -1 : 0
+    [bos, rej, tr, time[1]]
+
+float c_s10 = na
+float e20_s10 = na
+float e50_s10 = na
+float swHi_s10 = na
+float swHiP_s10 = na
+float swLo_s10 = na
+float swLoP_s10 = na
+float atr_s10 = na
+int t_s10 = na
+[c_m01, e20_m01, e50_m01, swHi_m01, swHiP_m01, swLo_m01, swLoP_m01, atr_m01, t_m01] = request.security(syminfo.tickerid, "1", f_mtfTuple(), lookahead=barmerge.lookahead_on)
+[c_m05, e20_m05, e50_m05, swHi_m05, swHiP_m05, swLo_m05, swLoP_m05, atr_m05, t_m05] = request.security(syminfo.tickerid, "5", f_mtfTuple(), lookahead=barmerge.lookahead_on)
+[c_m15, e20_m15, e50_m15, swHi_m15, swHiP_m15, swLo_m15, swLoP_m15, atr_m15, t_m15] = request.security(syminfo.tickerid, "15", f_mtfTuple(), lookahead=barmerge.lookahead_on)
+[c_h01, e20_h01, e50_h01, swHi_h01, swHiP_h01, swLo_h01, swLoP_h01, atr_h01, t_h01] = request.security(syminfo.tickerid, "60", f_mtfTuple(), lookahead=barmerge.lookahead_on)
+[c_h04, e20_h04, e50_h04, swHi_h04, swHiP_h04, swLo_h04, swLoP_h04, atr_h04, t_h04] = request.security(syminfo.tickerid, "240", f_mtfTuple(), lookahead=barmerge.lookahead_on)
+[c_day, e20_day, e50_day, swHi_day, swHiP_day, swLo_day, swLoP_day, atr_day, t_day] = request.security(syminfo.tickerid, "D", f_mtfTuple(), lookahead=barmerge.lookahead_on)
+[c_wek, e20_wek, e50_wek, swHi_wek, swHiP_wek, swLo_wek, swLoP_wek, atr_wek, t_wek] = request.security(syminfo.tickerid, "W", f_mtfTuple(), lookahead=barmerge.lookahead_on)
+[c_mon, e20_mon, e50_mon, swHi_mon, swHiP_mon, swLo_mon, swLoP_mon, atr_mon, t_mon] = request.security(syminfo.tickerid, "M", f_mtfTuple(), lookahead=barmerge.lookahead_on)
+
+// روند EMA ۲۰/۵۰ (برای 10S تا D): چرا ۲۰/۵۰ و نه ۵۰/۲۰۰؟ چون برای EMA ۲۰۰ به
+// ۲۰۰ کندلِ آن تایم‌فریم نیاز است و در بازه چارت روزانه (مثلاً چارت M15 فقط
+// ~۳ ماه دیتا دارد، یعنی ~۶۰ کندل روزانه) ۲۰۰ کندل روزانه وجود ندارد و EMA
+// ۵۰/۲۰۰ همیشه na می‌شد. روند چارت همچنان EMA ۵۰/۲۰۰ می‌ماند.
+int trend_s10 = na(c_s10) or na(e20_s10) or na(e50_s10) ? 0 : c_s10 > e20_s10 and e20_s10 > e50_s10 ? 1 : c_s10 < e20_s10 and e20_s10 < e50_s10 ? -1 : 0
+bool valid_s10 = not na(c_s10) and not na(e20_s10) and not na(e50_s10) and not na(t_s10) and t_s10 > 0
+int trend_m01 = na(c_m01) or na(e20_m01) or na(e50_m01) ? 0 : c_m01 > e20_m01 and e20_m01 > e50_m01 ? 1 : c_m01 < e20_m01 and e20_m01 < e50_m01 ? -1 : 0
+bool valid_m01 = not na(c_m01) and not na(e20_m01) and not na(e50_m01) and not na(t_m01) and t_m01 > 0
+int trend_m05 = na(c_m05) or na(e20_m05) or na(e50_m05) ? 0 : c_m05 > e20_m05 and e20_m05 > e50_m05 ? 1 : c_m05 < e20_m05 and e20_m05 < e50_m05 ? -1 : 0
+bool valid_m05 = not na(c_m05) and not na(e20_m05) and not na(e50_m05) and not na(t_m05) and t_m05 > 0
+int trend_m15 = na(c_m15) or na(e20_m15) or na(e50_m15) ? 0 : c_m15 > e20_m15 and e20_m15 > e50_m15 ? 1 : c_m15 < e20_m15 and e20_m15 < e50_m15 ? -1 : 0
+bool valid_m15 = not na(c_m15) and not na(e20_m15) and not na(e50_m15) and not na(t_m15) and t_m15 > 0
+int trend_h01 = na(c_h01) or na(e20_h01) or na(e50_h01) ? 0 : c_h01 > e20_h01 and e20_h01 > e50_h01 ? 1 : c_h01 < e20_h01 and e20_h01 < e50_h01 ? -1 : 0
+bool valid_h01 = not na(c_h01) and not na(e20_h01) and not na(e50_h01) and not na(t_h01) and t_h01 > 0
+int trend_h04 = na(c_h04) or na(e20_h04) or na(e50_h04) ? 0 : c_h04 > e20_h04 and e20_h04 > e50_h04 ? 1 : c_h04 < e20_h04 and e20_h04 < e50_h04 ? -1 : 0
+bool valid_h04 = not na(c_h04) and not na(e20_h04) and not na(e50_h04) and not na(t_h04) and t_h04 > 0
+int trend_day = na(c_day) or na(e20_day) or na(e50_day) ? 0 : c_day > e20_day and e20_day > e50_day ? 1 : c_day < e20_day and e20_day < e50_day ? -1 : 0
+bool valid_day = not na(c_day) and not na(e20_day) and not na(e50_day) and not na(t_day) and t_day > 0
+// روند ساختاری (فقط W و M): HH+HL صعودی، LH+LL نزولی؛ بقیه خنثی.
+int trend_wek = na(swHi_wek) or na(swHiP_wek) or na(swLo_wek) or na(swLoP_wek) ? 0 : swHi_wek > swHiP_wek and swLo_wek > swLoP_wek ? 1 : swHi_wek < swHiP_wek and swLo_wek < swLoP_wek ? -1 : 0
+bool valid_wek = not na(c_wek) and not na(swHi_wek) and not na(swHiP_wek) and not na(swLo_wek) and not na(swLoP_wek) and not na(t_wek) and t_wek > 0
+int trend_mon = na(swHi_mon) or na(swHiP_mon) or na(swLo_mon) or na(swLoP_mon) ? 0 : swHi_mon > swHiP_mon and swLo_mon > swLoP_mon ? 1 : swHi_mon < swHiP_mon and swLo_mon < swLoP_mon ? -1 : 0
+bool valid_mon = not na(c_mon) and not na(swHi_mon) and not na(swHiP_mon) and not na(swLo_mon) and not na(swLoP_mon) and not na(t_mon) and t_mon > 0
+
+// تجمیع مرکزی — فقط تایم‌فریم‌های معتبر وزن می‌گیرند؛ N/A وزن صفر دارد.
+// رژیم (W/M، وزن ۳): Bull اگر ≥ +3، Bear اگر ≤ −3؛ هر دو N/A ← نامشخص.
+// جهت (D/4H، وزن ۲): لانگ اگر ≥ +2، شورت اگر ≤ −2؛ هر دو N/A ← نامشخص و ورود بلوکه.
+// ستاپ (1H/15M، وزن ۱): ورود لانگ نیازمند setupScore ≥ 0 است (هیچ‌کدام مخالف نباشند).
+int regimeScore = (valid_wek ? 3 * trend_wek : 0) + (valid_mon ? 3 * trend_mon : 0)
+bool regimeUnknown = not valid_wek and not valid_mon
+int regimeState = regimeUnknown ? 0 : regimeScore >= 3 ? 1 : regimeScore <= -3 ? -1 : 0
+int dirScore = (valid_day ? 2 * trend_day : 0) + (valid_h04 ? 2 * trend_h04 : 0)
+bool dirUnknown = not valid_day and not valid_h04
+int dirState = dirUnknown ? 0 : dirScore >= 2 ? 1 : dirScore <= -2 ? -1 : 0
+int setupScore = (valid_h01 ? trend_h01 : 0) + (valid_m15 ? trend_m15 : 0)
+bool setupUnknown = not valid_h01 and not valid_m15
+
+// تأیید Micro از دو تایم‌فریم پایین — ۱۰ ثانیه هرگز جهت نمی‌دهد (وزن صفر).
+[mBos1, mRej1, mTrend1, mTime1] = request.security(syminfo.tickerid, microTF1, f_microState(), lookahead=barmerge.lookahead_on)
+[mBos2, mRej2, mTrend2, mTime2] = request.security(syminfo.tickerid, microTF2, f_microState(), lookahead=barmerge.lookahead_on)
+bool micro1Valid = timeframe.in_seconds(microTF1) < tfSec and not na(mTime1) and mTime1 > 0
+bool micro2Valid = timeframe.in_seconds(microTF2) < tfSec and not na(mTime2) and mTime2 > 0
+
+// امتیاز هم‌راستایی جهت در امتیاز OB (جایگزین مؤلفه HTF در ۵٫۲ — همان وزن‌ها):
+// هم‌راستا ۲۵ / خنثی یا نامشخص ۱۰ / مخالف ۰.

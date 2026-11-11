@@ -1,0 +1,335 @@
+//@version=5
+// Pip v2.0 — Fractal / Trend / Order Block / 1-2-3 / Flag / FVG / BOS / Sweep
+// Tuned for XAUUSD (Gold). Educational tool only — NOT a trading signal.
+// v2 changes vs v1:
+//   + HTF trend filter (default H1, configurable) — OBs only in HTF direction
+//   + Fair Value Gap (FVG) boxes, mitigated when filled
+//   + BOS / CHoCH labels on swing break
+//   + Liquidity sweep detection (wick beyond a fractal, close back inside)
+//   + Premium / Discount zones (50% of last 50-bar swing range)
+//   + London / New York session filter for alerts
+//   + SL / TP1 (1:2) / TP2 (1:3) lines on the last OB touch
+//   + Dashboard table: HTF trend, LTF trend, ATR, session, last signal
+// Use: H1 for trend/structure, M15 for entry. Demo first.
+// MT5 desktop v2 is in Pip_Fractal_OB_Flag_XAUUSD_v2.mq5 (same logic).
+
+indicator("Pip v2 — Fractal / OB / FVG / BOS / Flag | XAUUSD", shorttitle="Pip v2 OB", overlay=true,
+     max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ───────────────────────── Inputs ─────────────────────────
+grpTrend   = "Trend + HTF filter"
+grpFractal = "Fractal"
+grpOB      = "Order Block (XAUUSD tuned)"
+grpFVG     = "Fair Value Gap"
+grp123     = "1-2-3 Pattern"
+grpFlag    = "Flag"
+grpSess    = "Session filter (UTC, approx.)"
+grpRisk    = "SL / TP"
+
+showTrend   = input.bool(true,  "Show trend", group=grpTrend)
+emaFastLen  = input.int(50,  "EMA fast", minval=5, group=grpTrend)
+emaSlowLen  = input.int(200, "EMA slow", minval=20, group=grpTrend)
+htfTF       = input.timeframe("60", "HTF timeframe", group=grpTrend)
+obOnlyHTF   = input.bool(true, "OBs only in HTF trend direction", group=grpTrend)
+
+showFractal = input.bool(true, "Show fractals", group=grpFractal)
+fractalLen  = input.int(2,   "Fractal bars each side", minval=1, maxval=5, group=grpFractal)
+
+showOB      = input.bool(true,  "Show order blocks", group=grpOB)
+obLookback  = input.int(50,   "OB lookback (bars)", minval=10, maxval=200, group=grpOB)
+obDispATR   = input.float(1.0, "Min. displacement (x ATR 14)", minval=0.3, step=0.1, group=grpOB)
+obMaxBoxes  = input.int(8,    "Max OB boxes kept", minval=2, maxval=20, group=grpOB)
+obExtend    = input.int(30,   "OB box extension (bars)", minval=5, maxval=100, group=grpOB)
+
+showFVG     = input.bool(true, "Show FVG", group=grpFVG)
+fvgMaxBoxes = input.int(8, "Max FVG boxes kept", minval=2, maxval=20, group=grpFVG)
+
+show123     = input.bool(true, "Show 1-2-3", group=grp123)
+showFlag    = input.bool(true,  "Show flags", group=grpFlag)
+flagPoleATR = input.float(1.5, "Flag pole min. move (x ATR 14, 5 bars)", minval=0.5, step=0.1, group=grpFlag)
+flagMaxRet  = input.float(0.5, "Flag max. retracement of pole", minval=0.2, maxval=0.8, step=0.05, group=grpFlag)
+
+useSession  = input.bool(false, "Alerts only in London / New York session", group=grpSess)
+londonStart = input.int(7,  "London start (UTC hour)", minval=0, maxval=23, group=grpSess)
+londonEnd   = input.int(11, "London end (UTC hour)", minval=0, maxval=23, group=grpSess)
+nyStart     = input.int(12, "New York start (UTC hour)", minval=0, maxval=23, group=grpSess)
+nyEnd       = input.int(16, "New York end (UTC hour)", minval=0, maxval=23, group=grpSess)
+
+showRisk    = input.bool(true, "Show SL / TP on last OB touch", group=grpRisk)
+showDash    = input.bool(true, "Show dashboard", group="Dashboard")
+
+// ───────────────────────── Core + HTF trend ─────────────────────────
+atr     = ta.atr(14)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+trendUp   = close > emaFast and emaFast > emaSlow
+trendDown = close < emaFast and emaFast < emaSlow
+trendState = trendUp ? 1 : trendDown ? -1 : 0
+
+htfClose = request.security(syminfo.tickerid, htfTF, close, lookahead=barmerge.lookahead_off)
+htfEmaF  = request.security(syminfo.tickerid, htfTF, ta.ema(close, emaFastLen), lookahead=barmerge.lookahead_off)
+htfEmaS  = request.security(syminfo.tickerid, htfTF, ta.ema(close, emaSlowLen), lookahead=barmerge.lookahead_off)
+htfTrend = htfClose > htfEmaF and htfEmaF > htfEmaS ? 1 : htfClose < htfEmaF and htfEmaF < htfEmaS ? -1 : 0
+
+plot(emaFast, "EMA 50", color=color.new(color.blue, 0))
+plot(emaSlow, "EMA 200", color=color.new(color.orange, 0))
+bgcolor(showTrend and trendUp ? color.new(color.green, 92) : showTrend and trendDown ? color.new(color.red, 92) : na, title="Trend background")
+
+// Session (hour in UTC, approx. — chart timezone can shift this by 1h)
+utcHour   = hour(time, "UTC")
+inSession = not useSession or (utcHour >= londonStart and utcHour < londonEnd) or (utcHour >= nyStart and utcHour < nyEnd)
+
+// ───────────────────────── Fractals + BOS / CHoCH + Sweep ─────────────────────────
+ph = ta.pivothigh(high, fractalLen, fractalLen)
+pl = ta.pivotlow(low, fractalLen, fractalLen)
+plotshape(showFractal and not na(ph), title="Fractal Up", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, offset=-fractalLen)
+plotshape(showFractal and not na(pl), title="Fractal Down", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny, offset=-fractalLen)
+
+var float lastPh = na
+var float lastPl = na
+if not na(ph)
+    lastPh := ph
+if not na(pl)
+    lastPl := pl
+
+// BOS = break in trend direction, CHoCH = break against it
+bosUp   = not na(lastPh) and ta.crossover(close, lastPh)
+bosDown = not na(lastPl) and ta.crossunder(close, lastPl)
+bosUpTxt   = bosUp ? (trendState >= 0 ? "BOS" : "CHoCH") : na
+bosDownTxt = bosDown ? (trendState <= 0 ? "BOS" : "CHoCH") : na
+plotshape(bosUp, title="BOS/CHoCH Up", style=shape.labelup, location=location.belowbar, color=color.new(color.teal, 0), text=bosUpTxt, textcolor=color.white, size=size.tiny)
+plotshape(bosDown, title="BOS/CHoCH Down", style=shape.labeldown, location=location.abovebar, color=color.new(color.maroon, 0), text=bosDownTxt, textcolor=color.white, size=size.tiny)
+
+// Liquidity sweep: wick beyond last fractal, close back inside
+sweepUp   = not na(lastPh) and high > lastPh and close < lastPh
+sweepDown = not na(lastPl) and low < lastPl and close > lastPl
+plotshape(sweepUp, title="Sweep Up", style=shape.labeldown, location=location.abovebar, color=color.new(color.purple, 0), text="SWEEP", textcolor=color.white, size=size.tiny)
+plotshape(sweepDown, title="Sweep Down", style=shape.labelup, location=location.belowbar, color=color.new(color.purple, 0), text="SWEEP", textcolor=color.white, size=size.tiny)
+
+// ───────────────────────── Premium / Discount ─────────────────────────
+swingHi = ta.highest(high, 50)
+swingLo = ta.lowest(low, 50)
+eq      = (swingHi + swingLo) / 2
+plot(eq, "Equilibrium 50%", color=color.new(color.gray, 30), style=plot.style_linebr)
+var label premLabel = na
+var label discLabel = na
+if barstate.islast
+    if na(premLabel)
+        premLabel := label.new(bar_index, swingHi, "PREMIUM", style=label.style_label_down, color=color.new(color.red, 70), textcolor=color.white, size=size.tiny)
+        discLabel := label.new(bar_index, swingLo, "DISCOUNT", style=label.style_label_up, color=color.new(color.green, 70), textcolor=color.white, size=size.tiny)
+    else
+        label.set_xy(premLabel, bar_index, swingHi)
+        label.set_xy(discLabel, bar_index, swingLo)
+
+// ───────────────────────── Order Blocks (HTF-filtered) ─────────────────────────
+var box[] bullBoxes = array.new_box()
+var box[] bearBoxes = array.new_box()
+bullDisp = close > open and (close - open) > atr * obDispATR and close > high[1]
+bearDisp = close < open and (open - close) > atr * obDispATR and close < low[1]
+bullAllowed = not obOnlyHTF or htfTrend >= 0
+bearAllowed = not obOnlyHTF or htfTrend <= 0
+
+findLastBearish(_n) =>
+    int idx = na
+    for i = 1 to _n
+        if close[i] < open[i]
+            idx := i
+            break
+    idx
+findLastBullish(_n) =>
+    int idx = na
+    for i = 1 to _n
+        if close[i] > open[i]
+            idx := i
+            break
+    idx
+
+if showOB and bullDisp and bullAllowed and barstate.isconfirmed
+    int bi = findLastBearish(5)
+    if not na(bi)
+        box b = box.new(bar_index[bi], high[bi], bar_index + obExtend, low[bi], bgcolor=color.new(color.green, 80), border_color=color.new(color.green, 0), border_width=1)
+        array.push(bullBoxes, b)
+        if array.size(bullBoxes) > obMaxBoxes
+            box.delete(array.shift(bullBoxes))
+if showOB and bearDisp and bearAllowed and barstate.isconfirmed
+    int bi = findLastBullish(5)
+    if not na(bi)
+        box b = box.new(bar_index[bi], high[bi], bar_index + obExtend, low[bi], bgcolor=color.new(color.red, 80), border_color=color.new(color.red, 0), border_width=1)
+        array.push(bearBoxes, b)
+        if array.size(bearBoxes) > obMaxBoxes
+            box.delete(array.shift(bearBoxes))
+
+obBullTouch = false
+obBearTouch = false
+var float lastBullOBTop = na
+var float lastBullOBBot = na
+var float lastBearOBTop = na
+var float lastBearOBBot = na
+if array.size(bullBoxes) > 0
+    for i = array.size(bullBoxes) - 1 to 0
+        box b = array.get(bullBoxes, i)
+        float top = box.get_top(b)
+        float bot = box.get_bottom(b)
+        box.set_right(b, bar_index + obExtend)
+        if close < bot
+            box.delete(b)
+            array.remove(bullBoxes, i)
+        else if low <= top and low >= bot
+            obBullTouch := true
+            lastBullOBTop := top
+            lastBullOBBot := bot
+if array.size(bearBoxes) > 0
+    for i = array.size(bearBoxes) - 1 to 0
+        box b = array.get(bearBoxes, i)
+        float top = box.get_top(b)
+        float bot = box.get_bottom(b)
+        box.set_right(b, bar_index + obExtend)
+        if close > top
+            box.delete(b)
+            array.remove(bearBoxes, i)
+        else if high >= bot and high <= top
+            obBearTouch := true
+            lastBearOBTop := top
+            lastBearOBBot := bot
+
+plotshape(showOB and obBullTouch and inSession, title="OB Bull Touch", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), text="OB", textcolor=color.white, size=size.tiny)
+plotshape(showOB and obBearTouch and inSession, title="OB Bear Touch", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), text="OB", textcolor=color.white, size=size.tiny)
+
+// ───────────────────────── FVG ─────────────────────────
+var box[] bullFVG = array.new_box()
+var box[] bearFVG = array.new_box()
+bullFVGNew = low > high[2] and close > open
+bearFVGNew = high < low[2] and close < open
+if showFVG and bullFVGNew and barstate.isconfirmed
+    box b = box.new(bar_index[2], high[2], bar_index + obExtend, low, bgcolor=color.new(color.aqua, 85), border_color=color.new(color.aqua, 0))
+    array.push(bullFVG, b)
+    if array.size(bullFVG) > fvgMaxBoxes
+        box.delete(array.shift(bullFVG))
+if showFVG and bearFVGNew and barstate.isconfirmed
+    box b = box.new(bar_index[2], high, bar_index + obExtend, low[2], bgcolor=color.new(color.fuchsia, 85), border_color=color.new(color.fuchsia, 0))
+    array.push(bearFVG, b)
+    if array.size(bearFVG) > fvgMaxBoxes
+        box.delete(array.shift(bearFVG))
+if array.size(bullFVG) > 0
+    for i = array.size(bullFVG) - 1 to 0
+        box b = array.get(bullFVG, i)
+        box.set_right(b, bar_index + obExtend)
+        if low <= box.get_top(b)
+            box.delete(b)
+            array.remove(bullFVG, i)
+if array.size(bearFVG) > 0
+    for i = array.size(bearFVG) - 1 to 0
+        box b = array.get(bearFVG, i)
+        box.set_right(b, bar_index + obExtend)
+        if high >= box.get_bottom(b)
+            box.delete(b)
+            array.remove(bearFVG, i)
+
+// ───────────────────────── 1-2-3 (v1 logic, kept) ─────────────────────────
+var float p1Low = na, p2High = na, p3Low = na
+var float p1High = na, p2Low = na, p3High = na
+var int bull123Stage = 0, bear123Stage = 0
+if not na(pl)
+    if na(p1Low) or bull123Stage == 0
+        p1Low := pl
+        bull123Stage := 1
+    else if bull123Stage == 1 and not na(p2High) and pl > p1Low
+        p3Low := pl
+        bull123Stage := 3
+if not na(ph) and bull123Stage == 1
+    p2High := ph
+    bull123Stage := 2
+if not na(ph)
+    if na(p1High) or bear123Stage == 0
+        p1High := ph
+        bear123Stage := 1
+    else if bear123Stage == 1 and not na(p2Low) and ph < p1High
+        p3High := ph
+        bear123Stage := 3
+if not na(pl) and bear123Stage == 1
+    p2Low := pl
+    bear123Stage := 2
+bull123Break = show123 and bull123Stage == 3 and not na(p2High) and ta.crossover(close, p2High)
+bear123Break = show123 and bear123Stage == 3 and not na(p2Low) and ta.crossunder(close, p2Low)
+if bull123Break
+    bull123Stage := 0
+    p1Low := na
+    p2High := na
+    p3Low := na
+if bear123Break
+    bear123Stage := 0
+    p1High := na
+    p2Low := na
+    p3High := na
+plotshape(bull123Break, title="1-2-3 Bull", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), text="1-2-3", textcolor=color.white, size=size.small)
+plotshape(bear123Break, title="1-2-3 Bear", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), text="1-2-3", textcolor=color.white, size=size.small)
+
+// ───────────────────────── Flag (v1 logic, kept) ─────────────────────────
+poleUp   = close - close[5]
+poleDown = close[5] - close
+flagRangeHigh = ta.highest(high, 5)
+flagRangeLow  = ta.lowest(low, 5)
+flagRange     = flagRangeHigh - flagRangeLow
+bullFlag = showFlag and poleUp > atr * flagPoleATR and flagRange < poleUp * flagMaxRet and close > flagRangeHigh[1] and close[1] <= flagRangeHigh[1]
+bearFlag = showFlag and poleDown > atr * flagPoleATR and flagRange < poleDown * flagMaxRet and close < flagRangeLow[1] and close[1] >= flagRangeLow[1]
+plotshape(bullFlag, title="Bull Flag Break", style=shape.labelup, location=location.belowbar, color=color.new(color.teal, 0), text="FLAG", textcolor=color.white, size=size.small)
+plotshape(bearFlag, title="Bear Flag Break", style=shape.labeldown, location=location.abovebar, color=color.new(color.maroon, 0), text="FLAG", textcolor=color.white, size=size.small)
+
+// ───────────────────────── SL / TP on last OB touch ─────────────────────────
+var line slLine = na, tp1Line = na, tp2Line = na
+var label riskLabel = na
+drawRisk(_entry, _sl, _isBull) =>
+    float risk = math.abs(_entry - _sl)
+    float tp1 = _isBull ? _entry + risk * 2 : _entry - risk * 2
+    float tp2 = _isBull ? _entry + risk * 3 : _entry - risk * 3
+    if not na(slLine)
+        line.delete(slLine)
+        line.delete(tp1Line)
+        line.delete(tp2Line)
+        label.delete(riskLabel)
+    slLine  := line.new(bar_index, _sl, bar_index + 20, _sl, color=color.red, style=line.style_dashed)
+    tp1Line := line.new(bar_index, tp1, bar_index + 20, tp1, color=color.green, style=line.style_dashed)
+    tp2Line := line.new(bar_index, tp2, bar_index + 20, tp2, color=color.green, style=line.style_dotted)
+    riskLabel := label.new(bar_index + 20, tp1, "SL / TP1 1:2 / TP2 1:3", style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+if showRisk and obBullTouch and not na(lastBullOBBot)
+    drawRisk(close, lastBullOBBot - atr * 0.2, true)
+if showRisk and obBearTouch and not na(lastBearOBTop)
+    drawRisk(close, lastBearOBTop + atr * 0.2, false)
+
+// ───────────────────────── Dashboard ─────────────────────────
+var table dash = table.new(position.top_right, 2, 5, border_width=1)
+var string lastSignal = "—"
+if obBullTouch
+    lastSignal := "OB Bull touch"
+if obBearTouch
+    lastSignal := "OB Bear touch"
+if bull123Break
+    lastSignal := "1-2-3 Bull"
+if bear123Break
+    lastSignal := "1-2-3 Bear"
+if bullFlag
+    lastSignal := "Bull Flag"
+if bearFlag
+    lastSignal := "Bear Flag"
+if showDash and barstate.islast
+    table.cell(dash, 0, 0, "Pip v2 | XAUUSD", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(dash, 1, 0, "v2.0", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(dash, 0, 1, "HTF trend (" + htfTF + ")", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 1, htfTrend == 1 ? "UP" : htfTrend == -1 ? "DOWN" : "FLAT", text_color=color.white, bgcolor=htfTrend == 1 ? color.new(color.green, 0) : htfTrend == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+    table.cell(dash, 0, 2, "LTF trend", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 2, trendState == 1 ? "UP" : trendState == -1 ? "DOWN" : "FLAT", text_color=color.white, bgcolor=trendState == 1 ? color.new(color.green, 0) : trendState == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+    table.cell(dash, 0, 3, "ATR(14)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 3, str.tostring(atr, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 0, 4, "Last signal", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 4, lastSignal + (inSession ? "" : " (off-session)"), text_color=color.white, bgcolor=color.new(color.gray, 0))
+
+// ───────────────────────── Alerts (session-filtered if enabled) ─────────────────────────
+alertcondition(obBullTouch and inSession, title="v2 OB Bull Touch", message="Pip v2 XAUUSD: price touched a bullish order block (HTF-filtered)")
+alertcondition(obBearTouch and inSession, title="v2 OB Bear Touch", message="Pip v2 XAUUSD: price touched a bearish order block (HTF-filtered)")
+alertcondition(bull123Break and inSession, title="v2 1-2-3 Bull Break", message="Pip v2 XAUUSD: bullish 1-2-3 broke point 2")
+alertcondition(bear123Break and inSession, title="v2 1-2-3 Bear Break", message="Pip v2 XAUUSD: bearish 1-2-3 broke point 2")
+alertcondition(bullFlag and inSession, title="v2 Bull Flag Break", message="Pip v2 XAUUSD: bull flag breakout")
+alertcondition(bearFlag and inSession, title="v2 Bear Flag Break", message="Pip v2 XAUUSD: bear flag breakout")
+alertcondition(bosUp, title="v2 BOS/CHoCH Up", message="Pip v2 XAUUSD: swing high broken")
+alertcondition(bosDown, title="v2 BOS/CHoCH Down", message="Pip v2 XAUUSD: swing low broken")
+alertcondition(sweepUp or sweepDown, title="v2 Liquidity Sweep", message="Pip v2 XAUUSD: liquidity sweep detected")

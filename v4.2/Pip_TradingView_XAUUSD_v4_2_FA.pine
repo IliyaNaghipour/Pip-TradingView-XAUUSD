@@ -1,0 +1,810 @@
+//@version=6
+// پیپ نسخه ۴٫۲ — فارسی — فقط TradingView — Pine Script v6
+// بازسازی کامل نسخه ۳٫۱ طبق گزارش Audit در PIP_V4_AUDIT_FA.md
+// نسخه ۴٫۱: اصلاح خطای CE10188 — تابع plot() از داخل if به بدنه اصلی منتقل شد.
+// نسخه ۴٫۲: اصلاح خطای Runtime RE10045 — حلقه‌های array با آرایه خالی محافظت شدند.
+// مخصوص طلا (XAUUSD). ابزار آموزشی است — سیگنال خرید و فروش نیست. اول روی دمو تست کن.
+// تایم‌فریم پیشنهادی: H1 برای روند، M15 برای ورود.
+// نسخه ۳٫۱ دست‌نخورده باقی مانده است.
+//
+// نکات مهم درباره تأخیر (Repaint):
+//  - روند HTF فقط از کندل تأییدشده قبلی H1 خوانده می‌شود (close[1] با lookahead_on).
+//    پس روند HTF تا یک کندل H1 تأخیر دارد، ولی بعد از بسته‌شدن کندل دیگر عوض نمی‌شود.
+//  - فرکتال و Pivot فقط بعد از fractalLen کندل تأیید می‌شوند؛ سیگنال ۱-۲-۳ و BOS هم
+//    روی همین Pivotهای تأییدشده ساخته می‌شوند، پس چند کندل تأخیر دارند.
+//  - همه رویدادها (OB Touch، BOS، Sweep، ۱-۲-۳، Flag) فقط روی کندل تأییدشده (barstate.isconfirmed)
+//    ثبت می‌شوند؛ روی کندل در حال تشکیل هیچ سیگنالی قطعی نیست.
+
+indicator("پیپ نسخه ۴٫۲ — فرکتال / اردر بلاک / گپ / پرچم | طلا", shorttitle="پیپ نسخه ۴٫۲", overlay=true,
+     max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ───────────────────────── ورودی‌ها ─────────────────────────
+grpTrend  = "روند و تایم بالاتر"
+grpFrac   = "فرکتال"
+grpOB     = "اردر بلاک (طلا)"
+grpFVG    = "گپ ارزش منصفانه"
+grp123    = "الگوی ۱-۲-۳"
+grpFlag   = "پرچم (آزمایشی)"
+grpSess   = "سشن‌ها"
+grpRisk   = "مدیریت ریسک"
+grpUI     = "رابط کاربری و لایه‌ها"
+grpAlert  = "هشدارها"
+
+// روند
+emaFastLen = input.int(50, "میانگین سریع", minval=5, maxval=200, group=grpTrend)
+emaSlowLen = input.int(200, "میانگین کند", minval=20, maxval=400, group=grpTrend)
+htfTF      = input.timeframe("60", "تایم‌فریم بالاتر", group=grpTrend)
+obOnlyHTF  = input.bool(true, "اردر بلاک فقط در جهت روند تایم بالاتر", group=grpTrend)
+
+// فرکتال
+showFractal = input.bool(true, "نمایش فرکتال", group=grpFrac)
+fractalLen  = input.int(2, "تعداد کندل هر طرف فرکتال", minval=1, maxval=5, group=grpFrac)
+
+// اردر بلاک
+showOB      = input.bool(true, "نمایش اردر بلاک", group=grpOB)
+obLookback  = input.int(20, "بازگشت جستجوی کندل مخالف (کندل)", minval=5, maxval=50, group=grpOB)
+obDispATR   = input.float(1.0, "حداقل جابه‌جایی (برابر ATR 14)", minval=0.3, maxval=3.0, step=0.1, group=grpOB)
+obMaxTotal  = input.int(6, "حداکثر باکس اردر بلاک در مجموع (هر دو جهت)", minval=2, maxval=12, group=grpOB)
+obExtend    = input.int(30, "تمدید باکس (کندل)", minval=5, maxval=100, group=grpOB)
+minOBScore  = input.int(55, "حداقل امتیاز برای نمایش اردر بلاک (۰ تا ۱۰۰)", minval=0, maxval=100, group=grpOB)
+showOBScore = input.bool(true, "نمایش امتیاز روی اردر بلاک", group=grpOB)
+
+// گپ ارزش منصفانه
+showFVG     = input.bool(true, "نمایش گپ ارزش منصفانه", group=grpFVG)
+fvgMaxTotal = input.int(6, "حداکثر باکس گپ در مجموع (هر دو جهت)", minval=2, maxval=12, group=grpFVG)
+showFVGFil  = input.bool(true, "نمایش درصد پرشدگی گپ", group=grpFVG)
+
+// ۱-۲-۳ و پرچم
+show123     = input.bool(true, "نمایش الگوی ۱-۲-۳", group=grp123)
+showFlag    = input.bool(true, "نمایش پرچم (آزمایشی)", group=grpFlag)
+flagPoleATR = input.float(1.5, "حداقل حرکت میله پرچم (برابر ATR)", minval=0.5, maxval=4.0, step=0.1, group=grpFlag)
+flagMaxRet  = input.float(0.5, "حداکثر اصلاح نسبت به میله", minval=0.2, maxval=0.8, step=0.05, group=grpFlag)
+
+// سشن‌ها
+showSessBG  = input.bool(false, "نمایش پس‌زمینه سشن (پیش‌فرض خاموش)", group=grpSess)
+showAsia    = input.bool(true, "سشن آسیا", group=grpSess)
+showLondon  = input.bool(true, "سشن لندن", group=grpSess)
+showNY      = input.bool(true, "سشن نیویورک", group=grpSess)
+showKillZone = input.bool(true, "Kill Zone لندن / نیویورک", group=grpSess)
+showSessHL  = input.bool(false, "نمایش سقف / کف سشن جاری", group=grpSess)
+
+// ریسک
+showRisk   = input.bool(true, "نمایش ورود / حد ضرر / حد سود آخرین ستاپ", group=grpRisk)
+atrBuffer  = input.float(0.2, "فاصله حد ضرر از ناحیه (برابر ATR)", minval=0.0, maxval=1.0, step=0.05, group=grpRisk)
+tp1RR      = input.float(2.0, "نسبت حد سود ۱", minval=0.5, maxval=5.0, step=0.5, group=grpRisk)
+tp2RR      = input.float(3.0, "نسبت حد سود ۲", minval=1.0, maxval=6.0, step=0.5, group=grpRisk)
+
+// رابط کاربری
+showL1     = input.bool(true, "لایه ۱ — ضروری (روند، EMA، داشبورد، ساختار، اردر بلاک باکیفیت)", group=grpUI)
+showL2     = input.bool(true, "لایه ۲ — پیشرفته (FVG، Sweep، فرکتال، Premium/Discount، سشن)", group=grpUI)
+showL3     = input.bool(true, "لایه ۳ — ریسک (ورود، حد ضرر، حد سود)", group=grpUI)
+showDash   = input.bool(true, "نمایش داشبورد", group=grpUI)
+dashPos    = input.string("Top Right", "موقعیت داشبورد", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpUI)
+dashCompact = input.bool(true, "داشبورد جمع‌وجور (موبایل)", group=grpUI)
+maxLabels  = input.int(20, "حداکثر لیبل قابل مشاهده", minval=5, maxval=50, group=grpUI)
+
+// هشدارها — فعال/غیرفعال مستقل
+alOBBull  = input.bool(true, "هشدار لمس اردر بلاک صعودی", group=grpAlert)
+alOBBear  = input.bool(true, "هشدار لمس اردر بلاک نزولی", group=grpAlert)
+alBOSBull = input.bool(true, "هشدار BOS صعودی", group=grpAlert)
+alBOSBear = input.bool(true, "هشدار BOS نزولی", group=grpAlert)
+alCHBull  = input.bool(true, "هشدار CHoCH صعودی", group=grpAlert)
+alCHBear  = input.bool(true, "هشدار CHoCH نزولی", group=grpAlert)
+alSwpBull = input.bool(true, "هشدار جاروی نقدینگی صعودی", group=grpAlert)
+alSwpBear = input.bool(true, "هشدار جاروی نقدینگی نزولی", group=grpAlert)
+alFVGBull = input.bool(true, "هشدار ساخت گپ صعودی", group=grpAlert)
+alFVGBear = input.bool(true, "هشدار ساخت گپ نزولی", group=grpAlert)
+al123Bull = input.bool(true, "هشدار ۱-۲-۳ صعودی", group=grpAlert)
+al123Bear = input.bool(true, "هشدار ۱-۲-۳ نزولی", group=grpAlert)
+alFlgBull = input.bool(true, "هشدار پرچم صعودی (آزمایشی)", group=grpAlert)
+alFlgBear = input.bool(true, "هشدار پرچم نزولی (آزمایشی)", group=grpAlert)
+
+// ───────────────────────── انواع داده (UDT) ─────────────────────────
+type OBZone
+    box b
+    float top
+    float bottom
+    int dir
+    int id
+    float score
+    bool touched
+    bool inZone
+    bool mitigated
+    bool invalid
+    int bar
+
+type FVGZone
+    box b
+    float top
+    float bottom
+    int dir
+    int id
+    float fillPct
+    bool mitigated
+    bool invalid
+    bool fillShown
+    int bar
+
+// ───────────────────────── هسته: ATR، EMA، روند ─────────────────────────
+atr     = ta.atr(14)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+trendUp   = close > emaFast and emaFast > emaSlow
+trendDown = close < emaFast and emaFast < emaSlow
+trendState = trendUp ? 1 : trendDown ? -1 : 0
+
+// روند HTF فقط از کندل تأییدشده قبلی: close[1] با lookahead_on یعنی
+// مقدار کندل H1 که کامل بسته شده است؛ پس Repaint ندارد، ولی یک کندل H1 تأخیر دارد.
+[htfClose, htfEmaF, htfEmaS] = request.security(syminfo.tickerid, htfTF, [close[1], ta.ema(close, emaFastLen)[1], ta.ema(close, emaSlowLen)[1]], lookahead=barmerge.lookahead_on)
+htfTrend = htfClose > htfEmaF and htfEmaF > htfEmaS ? 1 : htfClose < htfEmaF and htfEmaF < htfEmaS ? -1 : 0
+htfValid = timeframe.in_seconds(htfTF) >= timeframe.in_seconds(timeframe.period)
+htfTrendSafe = htfValid ? htfTrend : trendState
+
+// نکته Pine: تابع plot() فقط در بدنه اصلی (global scope) مجاز است و نمی‌تواند
+// داخل if باشد (خطای CE10188). پس نمایش EMA با سری شرطی کنترل می‌شود، نه با if.
+plot(showL1 ? emaFast : na, "EMA سریع", color=color.new(color.blue, 0))
+plot(showL1 ? emaSlow : na, "EMA کند", color=color.new(color.orange, 0))
+
+// ───────────────────────── سشن‌ها (Timezone واقعی، DST با موتور TradingView) ─────────────────────────
+inAsia   = showAsia and not na(time(timeframe.period, "0000-0600", "Asia/Tokyo"))
+inLondon = showLondon and not na(time(timeframe.period, "0800-1630", "Europe/London"))
+inNY     = showNY and not na(time(timeframe.period, "0930-1600", "America/New_York"))
+inLdnKZ  = showKillZone and not na(time(timeframe.period, "0700-0900", "Europe/London"))
+inNyKZ   = showKillZone and not na(time(timeframe.period, "0700-0900", "America/New_York"))
+sessName = inLdnKZ ? "لندن KZ" : inNyKZ ? "نیویورک KZ" : inLondon ? "لندن" : inNY ? "نیویورک" : inAsia ? "آسیا" : "—"
+inAnySess = inAsia or inLondon or inNY or inLdnKZ or inNyKZ
+sessScoreBonus = inLdnKZ or inNyKZ ? 5.0 : inAnySess ? 2.0 : 0.0
+
+bgcolor(showSessBG and inLdnKZ ? color.new(color.purple, 93) : showSessBG and inNyKZ ? color.new(color.blue, 93) : showSessBG and inLondon ? color.new(color.teal, 94) : showSessBG and inNY ? color.new(color.orange, 94) : showSessBG and inAsia ? color.new(color.gray, 94) : na, title="پس‌زمینه سشن")
+
+// سقف / کف سشن جاری
+var float sessHi = na
+var float sessLo = na
+var string sessKey = ""
+sessKeyNow = inLdnKZ ? "LKZ" : inNyKZ ? "NKZ" : inLondon ? "LDN" : inNY ? "NY" : inAsia ? "ASIA" : ""
+if sessKeyNow != "" and sessKeyNow != sessKey
+    sessKey := sessKeyNow
+    sessHi := high
+    sessLo := low
+if sessKeyNow != ""
+    sessHi := math.max(sessHi, high)
+    sessLo := math.min(sessLo, low)
+plot(showSessHL and showL2 and not na(sessHi) ? sessHi : na, "سقف سشن", color=color.new(color.gray, 20), style=plot.style_linebr)
+plot(showSessHL and showL2 and not na(sessLo) ? sessLo : na, "کف سشن", color=color.new(color.gray, 20), style=plot.style_linebr)
+
+// ───────────────────────── فرکتال — دقیقاً روی Pivot ─────────────────────────
+ph = ta.pivothigh(high, fractalLen, fractalLen)
+pl = ta.pivotlow(low, fractalLen, fractalLen)
+
+var label[] evtLabels = array.new_label()
+var float lastPh = na
+var float lastPl = na
+var float prevPh = na
+var float prevPl = na
+
+// ردیابی سوئینگ همیشه انجام می‌شود، حتی اگر نمایش فرکتال خاموش باشد؛
+// چون BOS و CHoCH و Premium/Discount به همین سوئینگ‌ها وابسته‌اند.
+if not na(ph) and barstate.isconfirmed
+    prevPh := lastPh
+    lastPh := ph
+    if showFractal and showL2
+        label lb = label.new(bar_index - fractalLen, ph, "▼", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.red, 100), textcolor=color.new(color.red, 0), size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+if not na(pl) and barstate.isconfirmed
+    prevPl := lastPl
+    lastPl := pl
+    if showFractal and showL2
+        label lb = label.new(bar_index - fractalLen, pl, "▲", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.green, 100), textcolor=color.new(color.green, 0), size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+
+// ───────────────────────── ساختار بازار: BOS / CHoCH ─────────────────────────
+// هر سوئینگ بعد از شکست، وضعیت broken می‌گیرد و دوباره سیگنال نمی‌دهد.
+// CHoCH بر اساس جهت ساختار قبلی است، نه EMA.
+var int structState = 0
+var bool swingHiBroken = false
+var bool swingLoBroken = false
+var string lastStruct = "—"
+bool bosUpEvt = false
+bool bosDnEvt = false
+bool chochUpEvt = false
+bool chochDnEvt = false
+
+if not na(ph)
+    swingHiBroken := false
+if not na(pl)
+    swingLoBroken := false
+
+if showL1 and barstate.isconfirmed and not na(lastPh) and not swingHiBroken and close > lastPh
+    swingHiBroken := true
+    if structState == -1
+        chochUpEvt := true
+        lastStruct := "CHoCH"
+    else
+        bosUpEvt := true
+        lastStruct := "BOS"
+    structState := 1
+    label lb = label.new(bar_index, low, chochUpEvt ? "CHoCH" : "BOS", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.tiny)
+    array.push(evtLabels, lb)
+    if array.size(evtLabels) > maxLabels
+        label.delete(array.shift(evtLabels))
+
+if showL1 and barstate.isconfirmed and not na(lastPl) and not swingLoBroken and close < lastPl
+    swingLoBroken := true
+    if structState == 1
+        chochDnEvt := true
+        lastStruct := "CHoCH"
+    else
+        bosDnEvt := true
+        lastStruct := "BOS"
+    structState := -1
+    label lb = label.new(bar_index, high, chochDnEvt ? "CHoCH" : "BOS", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.maroon, 0), textcolor=color.white, size=size.tiny)
+    array.push(evtLabels, lb)
+    if array.size(evtLabels) > maxLabels
+        label.delete(array.shift(evtLabels))
+
+// ───────────────────────── جاروی نقدینگی ─────────────────────────
+var bool swingHiSwept = false
+var bool swingLoSwept = false
+bool sweepUpEvt = false
+bool sweepDnEvt = false
+if not na(ph)
+    swingHiSwept := false
+if not na(pl)
+    swingLoSwept := false
+
+if showL2 and barstate.isconfirmed and not na(lastPh) and not swingHiSwept and high > lastPh and close < lastPh
+    swingHiSwept := true
+    sweepUpEvt := true
+    label lb = label.new(bar_index, high, "SWP", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.purple, 0), textcolor=color.white, size=size.tiny)
+    array.push(evtLabels, lb)
+    if array.size(evtLabels) > maxLabels
+        label.delete(array.shift(evtLabels))
+if showL2 and barstate.isconfirmed and not na(lastPl) and not swingLoSwept and low < lastPl and close > lastPl
+    swingLoSwept := true
+    sweepDnEvt := true
+    label lb = label.new(bar_index, low, "SWP", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.purple, 0), textcolor=color.white, size=size.tiny)
+    array.push(evtLabels, lb)
+    if array.size(evtLabels) > maxLabels
+        label.delete(array.shift(evtLabels))
+
+// ───────────────────────── توابع خالص (هیچ متغیر سراسری را تغییر نمی‌دهند) ─────────────────────────
+f_lastOpp(int dir, int n) =>
+    int idx = na
+    for i = 1 to n
+        if na(idx) and dir == 1 and close[i] < open[i]
+            idx := i
+        if na(idx) and dir == -1 and close[i] > open[i]
+            idx := i
+    idx
+
+f_overlap(float cLow, float cHigh, float zBot, float zTop) =>
+    cLow <= zTop and cHigh >= zBot
+
+// ───────────────────────── اردر بلاک ─────────────────────────
+// آرایه FVG اینجا اعلان می‌شود تا امتیاز OB بتواند هم‌پوشانی با FVG را بسنجد؛
+// ساخت FVGها در بخش بعدی انجام می‌شود.
+var FVGZone[] fvgZones = array.new<FVGZone>()
+var int fvgNextId = 1
+var OBZone[] obZones = array.new<OBZone>()
+var int obNextId = 1
+bool obBullTouchEvt = false
+bool obBearTouchEvt = false
+int touchedObId = na
+int touchedObDir = 0
+float touchedObTop = na
+float touchedObBot = na
+float touchedObScore = na
+
+bullDisp = close > open and (close - open) > atr * obDispATR and close > high[1]
+bearDisp = close < open and (open - close) > atr * obDispATR and close < low[1]
+bullAllowed = not obOnlyHTF or htfTrendSafe >= 0
+bearAllowed = not obOnlyHTF or htfTrendSafe <= 0
+
+// امتیاز OB: HTF هم‌راستا ۲۵، قدرت جابه‌جایی تا ۲۰، تأیید ساختار ۱۵،
+ // جاروی نقدینگی ۱۰، هم‌پوشانی FVG ۱۵، تازگی ۱۰، سشن ۵ — مجموع ۱۰۰.
+ // امتیاز احتمال موفقیت معامله نیست؛ فقط کیفیت نسبی ناحیه را نشان می‌دهد.
+f_obScore(float disp, bool htfOk, bool structOk, bool sweepOk, bool fvgOk, float atrVal, float sessBonus) =>
+    float s = 0.0
+    s := s + (htfOk ? 25.0 : 0.0)
+    s := s + math.min(disp / atrVal, 3.0) / 3.0 * 20.0
+    s := s + (structOk ? 15.0 : 0.0)
+    s := s + (sweepOk ? 10.0 : 0.0)
+    s := s + (fvgOk ? 15.0 : 0.0)
+    s := s + 10.0
+    s := s + sessBonus
+    math.min(s, 100.0)
+
+if showOB and showL1 and bullDisp and bullAllowed and barstate.isconfirmed
+    int bi = f_lastOpp(1, obLookback)
+    if not na(bi)
+        bool dup = false
+        if array.size(obZones) > 0
+            for i = 0 to array.size(obZones) - 1
+                OBZone z = array.get(obZones, i)
+                if z.bar == bar_index - bi
+                    dup := true
+        if not dup
+            float top = high[bi]
+            float bot = low[bi]
+            bool fvgConf = false
+            if array.size(fvgZones) > 0
+                for i = 0 to array.size(fvgZones) - 1
+                    FVGZone fz = array.get(fvgZones, i)
+                    if f_overlap(bot, top, fz.bottom, fz.top)
+                        fvgConf := true
+            float sc = f_obScore(close - open, htfTrendSafe >= 0, bosUpEvt or chochUpEvt, sweepDnEvt, fvgConf, atr, sessScoreBonus)
+            box b = box.new(bar_index - bi, top, bar_index + obExtend, bot, bgcolor=color.new(color.green, 82), border_color=color.new(color.green, 0), border_width=1)
+            OBZone nz = OBZone.new(b, top, bot, 1, obNextId, sc, false, false, false, false, bar_index - bi)
+            obNextId += 1
+            array.push(obZones, nz)
+            while array.size(obZones) > obMaxTotal
+                OBZone old = array.shift(obZones)
+                box.delete(old.b)
+
+if showOB and showL1 and bearDisp and bearAllowed and barstate.isconfirmed
+    int bi = f_lastOpp(-1, obLookback)
+    if not na(bi)
+        bool dup = false
+        if array.size(obZones) > 0
+            for i = 0 to array.size(obZones) - 1
+                OBZone z = array.get(obZones, i)
+                if z.bar == bar_index - bi
+                    dup := true
+        if not dup
+            float top = high[bi]
+            float bot = low[bi]
+            bool fvgConf = false
+            if array.size(fvgZones) > 0
+                for i = 0 to array.size(fvgZones) - 1
+                    FVGZone fz = array.get(fvgZones, i)
+                    if f_overlap(bot, top, fz.bottom, fz.top)
+                        fvgConf := true
+            float sc = f_obScore(open - close, htfTrendSafe <= 0, bosDnEvt or chochDnEvt, sweepUpEvt, fvgConf, atr, sessScoreBonus)
+            box b = box.new(bar_index - bi, top, bar_index + obExtend, bot, bgcolor=color.new(color.red, 82), border_color=color.new(color.red, 0), border_width=1)
+            OBZone nz = OBZone.new(b, top, bot, -1, obNextId, sc, false, false, false, false, bar_index - bi)
+            obNextId += 1
+            array.push(obZones, nz)
+            while array.size(obZones) > obMaxTotal
+                OBZone old = array.shift(obZones)
+                box.delete(old.b)
+
+// به‌روزرسانی OBها: Touch با هم‌پوشانی واقعی، Mitigation، Invalidation
+float bestObScore = na
+if array.size(obZones) > 0
+    for i = array.size(obZones) - 1 to 0
+        OBZone z = array.get(obZones, i)
+        box.set_right(z.b, bar_index + obExtend)
+        bool overlap = f_overlap(low, high, z.bottom, z.top)
+        bool invalidNow = z.dir == 1 ? close < z.bottom : close > z.top
+        if invalidNow
+            z.invalid := true
+            box.delete(z.b)
+            array.remove(obZones, i)
+        else
+            if overlap
+                if not z.inZone
+                    z.inZone := true
+                    z.touched := true
+                    z.mitigated := true
+                    if z.dir == 1
+                        obBullTouchEvt := true
+                    else
+                        obBearTouchEvt := true
+                    touchedObId := z.id
+                    touchedObDir := z.dir
+                    touchedObTop := z.top
+                    touchedObBot := z.bottom
+                    touchedObScore := z.score
+                    string lbl = z.dir == 1 ? "OB+" : "OB-"
+                    if showOBScore
+                        lbl := lbl + " " + str.tostring(math.round(z.score))
+                    label lb = label.new(bar_index, z.dir == 1 ? low : high, lbl, xloc=xloc.bar_index, style=z.dir == 1 ? label.style_label_up : label.style_label_down, color=z.dir == 1 ? color.new(color.green, 0) : color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+                    array.push(evtLabels, lb)
+                    if array.size(evtLabels) > maxLabels
+                        label.delete(array.shift(evtLabels))
+            else
+                z.inZone := false
+            if z.score >= minOBScore and (na(bestObScore) or z.score > bestObScore)
+                bestObScore := z.score
+            // ناحیه کم‌امتیاز در حالت پیش‌فرض دیده نمی‌شود
+            box.set_bgcolor(z.b, z.score >= minOBScore ? (z.dir == 1 ? color.new(color.green, 82) : color.new(color.red, 82)) : color.new(color.gray, 90))
+
+// اگر لایه ۱ یا نمایش OB خاموش شد، باکس‌های OB پاک شوند
+if (not showOB or not showL1) and array.size(obZones) > 0
+    for i = array.size(obZones) - 1 to 0
+        OBZone z = array.get(obZones, i)
+        box.delete(z.b)
+    array.clear(obZones)
+
+// ───────────────────────── گپ ارزش منصفانه ─────────────────────────
+bool fvgBullEvt = false
+bool fvgBearEvt = false
+
+bullFVGNew = low > high[2] and close > open
+bearFVGNew = high < low[2] and close < open
+if showFVG and showL2 and bullFVGNew and barstate.isconfirmed
+    float top = math.max(low, high[2])
+    float bot = math.min(low, high[2])
+    box b = box.new(bar_index - 2, top, bar_index + obExtend, bot, bgcolor=color.new(color.aqua, 86), border_color=color.new(color.aqua, 0))
+    FVGZone nz = FVGZone.new(b, top, bot, 1, fvgNextId, 0.0, false, false, false, bar_index - 2)
+    fvgNextId += 1
+    array.push(fvgZones, nz)
+    fvgBullEvt := true
+    while array.size(fvgZones) > fvgMaxTotal
+        FVGZone old = array.shift(fvgZones)
+        box.delete(old.b)
+if showFVG and showL2 and bearFVGNew and barstate.isconfirmed
+    float top = math.max(low[2], high)
+    float bot = math.min(low[2], high)
+    box b = box.new(bar_index - 2, top, bar_index + obExtend, bot, bgcolor=color.new(color.fuchsia, 86), border_color=color.new(color.fuchsia, 0))
+    FVGZone nz = FVGZone.new(b, top, bot, -1, fvgNextId, 0.0, false, false, false, bar_index - 2)
+    fvgNextId += 1
+    array.push(fvgZones, nz)
+    fvgBearEvt := true
+    while array.size(fvgZones) > fvgMaxTotal
+        FVGZone old = array.shift(fvgZones)
+        box.delete(old.b)
+
+if array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        box.set_right(z.b, bar_index + obExtend)
+        float gapSize = z.top - z.bottom
+        if z.dir == 1
+            float entered = math.max(0.0, z.top - low)
+            z.fillPct := gapSize > 0 ? math.min(entered / gapSize, 1.0) : 0.0
+            if low < z.top and close > z.bottom
+                z.mitigated := true
+            bool fullFill = low <= z.bottom
+            bool invalidNow = close < z.bottom
+            if fullFill or invalidNow
+                z.invalid := true
+                box.delete(z.b)
+                array.remove(fvgZones, i)
+        else
+            float entered = math.max(0.0, high - z.bottom)
+            z.fillPct := gapSize > 0 ? math.min(entered / gapSize, 1.0) : 0.0
+            if high > z.bottom and close < z.top
+                z.mitigated := true
+            bool fullFill = high >= z.top
+            bool invalidNow = close > z.top
+            if fullFill or invalidNow
+                z.invalid := true
+                box.delete(z.b)
+                array.remove(fvgZones, i)
+        // نمایش درصد پرشدگی: یک بار، وقتی پرشدگی به ۵۰٪ رسید
+        if showFVGFil and showL2 and not z.invalid and z.fillPct >= 0.5 and not z.fillShown
+            z.fillShown := true
+            label lb = label.new(bar_index, z.dir == 1 ? z.top : z.bottom, (z.dir == 1 ? "FVG+ " : "FVG- ") + str.tostring(math.round(z.fillPct * 100)) + "٪", xloc=xloc.bar_index, style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+            array.push(evtLabels, lb)
+            if array.size(evtLabels) > maxLabels
+                label.delete(array.shift(evtLabels))
+
+if (not showFVG or not showL2) and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        box.delete(z.b)
+    array.clear(fvgZones)
+
+// ───────────────────────── الگوی ۱-۲-۳ — State Machine ─────────────────────────
+// حالت‌ها: ۰=انتظار نقطه ۱، ۱=انتظار نقطه ۲، ۲=انتظار نقطه ۳، ۳=انتظار تأیید،
+// ۴=تأییدشده (یک کندل)، ۵=باطل‌شده (یک کندل و بعد ریست)
+var float bP1 = na
+var float bP2 = na
+var float bP3 = na
+var int bStage = 0
+var float sP1 = na
+var float sP2 = na
+var float sP3 = na
+var int sStage = 0
+bool bull123Evt = false
+bool bear123Evt = false
+
+// صعودی: نقطه ۱ = سوئینگ Low، نقطه ۲ = سوئینگ High، نقطه ۳ = Higher Low، تأیید = شکست نقطه ۲
+if show123 and showL1 and barstate.isconfirmed
+    if bStage == 0
+        if not na(pl)
+            bP1 := pl
+            bStage := 1
+    else if bStage == 1
+        if not na(ph) and ph > bP1
+            bP2 := ph
+            bStage := 2
+        else if not na(pl) and pl < bP1
+            bP1 := pl
+    else if bStage == 2
+        if not na(pl) and pl > bP1 and pl < bP2
+            bP3 := pl
+            bStage := 3
+        else if not na(ph) and ph > bP2
+            bP2 := ph
+        else if close < bP1
+            bStage := 5
+    else if bStage == 3
+        if close > bP2
+            bull123Evt := true
+            bStage := 4
+        else if close < bP1
+            bStage := 5
+    else if bStage == 4 or bStage == 5
+        bStage := 0
+        bP1 := na
+        bP2 := na
+        bP3 := na
+
+// نزولی: معکوس کامل
+if show123 and showL1 and barstate.isconfirmed
+    if sStage == 0
+        if not na(ph)
+            sP1 := ph
+            sStage := 1
+    else if sStage == 1
+        if not na(pl) and pl < sP1
+            sP2 := pl
+            sStage := 2
+        else if not na(ph) and ph > sP1
+            sP1 := ph
+    else if sStage == 2
+        if not na(ph) and ph < sP1 and ph > sP2
+            sP3 := ph
+            sStage := 3
+        else if not na(pl) and pl < sP2
+            sP2 := pl
+        else if close > sP1
+            sStage := 5
+    else if sStage == 3
+        if close < sP2
+            bear123Evt := true
+            sStage := 4
+        else if close > sP1
+            sStage := 5
+    else if sStage == 4 or sStage == 5
+        sStage := 0
+        sP1 := na
+        sP2 := na
+        sP3 := na
+
+if bull123Evt
+    label lb = label.new(bar_index, low, "123", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.tiny)
+    array.push(evtLabels, lb)
+    if array.size(evtLabels) > maxLabels
+        label.delete(array.shift(evtLabels))
+if bear123Evt
+    label lb = label.new(bar_index, high, "123", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+    array.push(evtLabels, lb)
+    if array.size(evtLabels) > maxLabels
+        label.delete(array.shift(evtLabels))
+
+// ───────────────────────── پرچم — آزمایشی (Experimental) ─────────────────────────
+// میله: حرکت ۵ کندله بزرگ‌تر از ATR؛ اصلاح: ۵ کندل بعدی با بازه کوچک و Retracement زیر حد؛
+// شکست: بسته‌شدن آن‌طرف بازه اصلاح روی کندل تأییدشده.
+// تشخیص پرچم ذاتاً قطعی نیست؛ به همین دلیل این بخش آزمایشی است و سیگنال معاملاتی نیست.
+bool bullFlagEvt = false
+bool bearFlagEvt = false
+float poleUp   = close[5] - close[10]
+float poleDown = close[10] - close[5]
+float consHi = ta.highest(high, 5)
+float consLo = ta.lowest(low, 5)
+float consRange = consHi - consLo
+if showFlag and showL1 and barstate.isconfirmed
+    if poleUp > atr * flagPoleATR and consRange < poleUp * flagMaxRet and close > consHi and close[1] <= consHi
+        bullFlagEvt := true
+        label lb = label.new(bar_index, low, "FLAG?", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+    if poleDown > atr * flagPoleATR and consRange < poleDown * flagMaxRet and close < consLo and close[1] >= consLo
+        bearFlagEvt := true
+        label lb = label.new(bar_index, high, "FLAG?", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.maroon, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+
+// ───────────────────────── Premium / Discount — از سوئینگ‌های تأییدشده ─────────────────────────
+float swingHi = na(lastPh) ? na : lastPh
+float swingLo = na(lastPl) ? na : lastPl
+float eqLevel = not na(swingHi) and not na(swingLo) ? (swingHi + swingLo) / 2.0 : na
+plot(showL2 and not na(eqLevel) ? eqLevel : na, "خط تعادل ۵۰٪", color=color.new(color.gray, 30), style=plot.style_linebr)
+var label premLabel = na
+var label discLabel = na
+if showL2 and barstate.islast and not na(swingHi) and not na(swingLo)
+    if na(premLabel)
+        premLabel := label.new(bar_index, swingHi, "گران", style=label.style_label_down, color=color.new(color.red, 85), textcolor=color.white, size=size.tiny)
+        discLabel := label.new(bar_index, swingLo, "ارزان", style=label.style_label_up, color=color.new(color.green, 85), textcolor=color.white, size=size.tiny)
+    else
+        label.set_xy(premLabel, bar_index, swingHi)
+        label.set_xy(discLabel, bar_index, swingLo)
+if not showL2 and not na(premLabel)
+    label.delete(premLabel)
+    label.delete(discLabel)
+    premLabel := na
+    discLabel := na
+
+// ───────────────────────── مدیریت ریسک — فقط آخرین ستاپ معتبر ─────────────────────────
+var line slLine = na
+var line tp1Line = na
+var line tp2Line = na
+var label riskLabel = na
+var bool setupActive = false
+var int setupDir = 0
+var float setupEntry = na
+var float setupSL = na
+var float setupTP1 = na
+var float setupTP2 = na
+var int setupId = na
+var string setupSrc = ""
+
+bool newSetup = false
+int newSetupDir = 0
+float newSetupEntry = na
+float newSetupSL = na
+int newSetupId = na
+string newSetupSrc = ""
+if showRisk and showL3 and barstate.isconfirmed
+    if obBullTouchEvt and (not setupActive or setupId != touchedObId)
+        newSetup := true
+        newSetupDir := 1
+        newSetupEntry := close
+        newSetupSL := touchedObBot - atr * atrBuffer
+        newSetupId := touchedObId
+        newSetupSrc := "OB+"
+    else if obBearTouchEvt and (not setupActive or setupId != touchedObId)
+        newSetup := true
+        newSetupDir := -1
+        newSetupEntry := close
+        newSetupSL := touchedObTop + atr * atrBuffer
+        newSetupId := touchedObId
+        newSetupSrc := "OB-"
+    else if bull123Evt and not setupActive
+        newSetup := true
+        newSetupDir := 1
+        newSetupEntry := close
+        newSetupSL := bP3 - atr * atrBuffer
+        newSetupId := -1
+        newSetupSrc := "123"
+    else if bear123Evt and not setupActive
+        newSetup := true
+        newSetupDir := -1
+        newSetupEntry := close
+        newSetupSL := sP3 + atr * atrBuffer
+        newSetupId := -2
+        newSetupSrc := "123"
+
+if newSetup and not na(newSetupSL) and not na(newSetupEntry)
+    float riskAmt = math.abs(newSetupEntry - newSetupSL)
+    if riskAmt > 0
+        if not na(slLine)
+            line.delete(slLine)
+            line.delete(tp1Line)
+            line.delete(tp2Line)
+            label.delete(riskLabel)
+        float tp1 = newSetupDir == 1 ? newSetupEntry + riskAmt * tp1RR : newSetupEntry - riskAmt * tp1RR
+        float tp2 = newSetupDir == 1 ? newSetupEntry + riskAmt * tp2RR : newSetupEntry - riskAmt * tp2RR
+        slLine := line.new(bar_index, newSetupSL, bar_index + 20, newSetupSL, color=color.red, style=line.style_dashed)
+        tp1Line := line.new(bar_index, tp1, bar_index + 20, tp1, color=color.green, style=line.style_dashed)
+        tp2Line := line.new(bar_index, tp2, bar_index + 20, tp2, color=color.green, style=line.style_dotted)
+        riskLabel := label.new(bar_index + 20, tp1, "ورود " + str.tostring(newSetupEntry, format.mintick) + " | حد ضرر " + str.tostring(newSetupSL, format.mintick), style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+        setupActive := true
+        setupDir := newSetupDir
+        setupEntry := newSetupEntry
+        setupSL := newSetupSL
+        setupTP1 := tp1
+        setupTP2 := tp2
+        setupId := newSetupId
+        setupSrc := newSetupSrc
+
+// اگر ستاپ باطل شد (قیمت از حد ضرر گذشت)، خطوط پاک شوند
+bool setupInvalid = setupActive and barstate.isconfirmed and ((setupDir == 1 and close < setupSL) or (setupDir == -1 and close > setupSL))
+if setupInvalid and not na(slLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    label.delete(riskLabel)
+    slLine := na
+    tp1Line := na
+    tp2Line := na
+    riskLabel := na
+    setupActive := false
+    setupId := na
+    setupSrc := ""
+
+// تمدید خطوط ستاپ فعال
+if setupActive and not na(slLine)
+    line.set_x2(slLine, bar_index + 20)
+    line.set_x2(tp1Line, bar_index + 20)
+    line.set_x2(tp2Line, bar_index + 20)
+    label.set_x(riskLabel, bar_index + 20)
+if (not showRisk or not showL3) and not na(slLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    label.delete(riskLabel)
+    slLine := na
+    tp1Line := na
+    tp2Line := na
+    riskLabel := na
+    setupActive := false
+
+// ───────────────────────── داشبورد فارسی ─────────────────────────
+var table dash = table.new(position.top_right, 2, 8, border_width=1)
+var string lastSignal = "—"
+if obBullTouchEvt
+    lastSignal := "لمس اردر بلاک صعودی"
+if obBearTouchEvt
+    lastSignal := "لمس اردر بلاک نزولی"
+if bull123Evt
+    lastSignal := "الگوی ۱-۲-۳ صعودی"
+if bear123Evt
+    lastSignal := "الگوی ۱-۲-۳ نزولی"
+if bullFlagEvt
+    lastSignal := "پرچم صعودی (آزمایشی)"
+if bearFlagEvt
+    lastSignal := "پرچم نزولی (آزمایشی)"
+if bosUpEvt
+    lastSignal := "شکست ساختار صعودی"
+if bosDnEvt
+    lastSignal := "شکست ساختار نزولی"
+if chochUpEvt
+    lastSignal := "تغییر روند صعودی"
+if chochDnEvt
+    lastSignal := "تغییر روند نزولی"
+if sweepUpEvt or sweepDnEvt
+    lastSignal := "جاروی نقدینگی"
+
+string htfTxt = not htfValid ? "نامعتبر (HTF کوچک‌تر از چارت)" : htfTrendSafe == 1 ? "صعودی" : htfTrendSafe == -1 ? "نزولی" : "خنثی"
+string ltfTxt = trendState == 1 ? "صعودی" : trendState == -1 ? "نزولی" : "خنثی"
+string structTxt = lastStruct == "—" ? (structState == 1 ? "صعودی" : structState == -1 ? "نزولی" : "خنثی") : lastStruct
+string scoreTxt = na(bestObScore) ? "—" : str.tostring(math.round(bestObScore)) + " / ۱۰۰"
+
+if showDash and showL1 and barstate.islast
+    dashPosVal = dashPos == "Top Left" ? position.top_left : dashPos == "Bottom Right" ? position.bottom_right : dashPos == "Bottom Left" ? position.bottom_left : position.top_right
+    table.set_position(dash, dashPosVal)
+    table.cell(dash, 0, 0, "پیپ ۴٫۲ | " + syminfo.ticker, text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(dash, 1, 0, timeframe.period, text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(dash, 0, 1, "روند HTF (" + htfTF + ")", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 1, htfTxt, text_color=color.white, bgcolor=htfTrendSafe == 1 ? color.new(color.green, 0) : htfTrendSafe == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+    table.cell(dash, 0, 2, "روند فعلی", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 2, ltfTxt, text_color=color.white, bgcolor=trendState == 1 ? color.new(color.green, 0) : trendState == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+    table.cell(dash, 0, 3, "ATR(14)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 3, str.tostring(atr, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    if not dashCompact
+        table.cell(dash, 0, 4, "ساختار بازار", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 4, structTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 5, "سشن", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 5, sessName, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 6, "امتیاز بهترین OB", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 6, scoreTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 7, "آخرین رویداد", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 7, lastSignal, text_color=color.white, bgcolor=color.new(color.gray, 0))
+    else
+        table.cell(dash, 0, 4, "آخرین رویداد", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 4, lastSignal, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 5, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 5, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 6, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 6, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 7, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 7, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+
+// ───────────────────────── هشدارها — ۱۴ هشدار مستقل ─────────────────────────
+// پیام‌ها ثابت‌اند (alertcondition) و برای Webhook قابل استفاده‌اند.
+// برای هشدار تلگرام، در TradingView یک Alert بساز و Webhook تلگرام را در آن تنظیم کن؛
+// هیچ توکن یا کلیدی داخل کد Pine قرار نمی‌گیرد.
+alertcondition(alOBBull and obBullTouchEvt, title="لمس اردر بلاک صعودی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | لمس اردر بلاک صعودی | قیمت {{close}}")
+alertcondition(alOBBear and obBearTouchEvt, title="لمس اردر بلاک نزولی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | لمس اردر بلاک نزولی | قیمت {{close}}")
+alertcondition(alBOSBull and bosUpEvt, title="BOS صعودی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | شکست ساختار صعودی | قیمت {{close}}")
+alertcondition(alBOSBear and bosDnEvt, title="BOS نزولی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | شکست ساختار نزولی | قیمت {{close}}")
+alertcondition(alCHBull and chochUpEvt, title="CHoCH صعودی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | تغییر روند صعودی | قیمت {{close}}")
+alertcondition(alCHBear and chochDnEvt, title="CHoCH نزولی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | تغییر روند نزولی | قیمت {{close}}")
+alertcondition(alSwpBull and sweepUpEvt, title="جاروی نقدینگی صعودی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | جاروی نقدینگی بالای سقف | قیمت {{close}}")
+alertcondition(alSwpBear and sweepDnEvt, title="جاروی نقدینگی نزولی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | جاروی نقدینگی زیر کف | قیمت {{close}}")
+alertcondition(alFVGBull and fvgBullEvt, title="ساخت گپ صعودی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | گپ ارزش منصفانه صعودی ساخته شد | قیمت {{close}}")
+alertcondition(alFVGBear and fvgBearEvt, title="ساخت گپ نزولی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | گپ ارزش منصفانه نزولی ساخته شد | قیمت {{close}}")
+alertcondition(al123Bull and bull123Evt, title="۱-۲-۳ صعودی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | الگوی ۱-۲-۳ صعودی نقطه ۲ را شکست | قیمت {{close}}")
+alertcondition(al123Bear and bear123Evt, title="۱-۲-۳ نزولی", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | الگوی ۱-۲-۳ نزولی نقطه ۲ را شکست | قیمت {{close}}")
+alertcondition(alFlgBull and bullFlagEvt, title="پرچم صعودی (آزمایشی)", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | پرچم صعودی شکست (آزمایشی) | قیمت {{close}}")
+alertcondition(alFlgBear and bearFlagEvt, title="پرچم نزولی (آزمایشی)", message="پیپ ۴٫۲ | {{ticker}} | {{interval}} | پرچم نزولی شکست (آزمایشی) | قیمت {{close}}")

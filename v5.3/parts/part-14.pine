@@ -1,0 +1,150 @@
+                    tp1Inferred += 1
+    int totalExits = tp1Total + tp2Hits + slHits + beHits + trailHits
+    int otherCloses = n - tp2Hits - slHits - beHits - trailHits
+    int estRiskN = array.size(estRiskIds)
+    float winRate = n > 0 ? wins / n * 100.0 : 0.0
+    float longWR = longN > 0 ? longWins / longN * 100.0 : 0.0
+    float shortWR = shortN > 0 ? shortWins / shortN * 100.0 : 0.0
+    float pf = grossLoss > 0 ? grossWin / grossLoss : na
+    float avgProfit = n > 0 ? totProfit / n : 0.0
+    float avgR = matchedN > 0 ? totR / matchedN : 0.0
+    float obWR = obN > 0 ? obWins / obN * 100.0 : 0.0
+    float xWR = xN > 0 ? xWins / xN * 100.0 : 0.0
+    if not na(stats)
+        table.cell(stats, 0, 0, "پیپ ۵٫۳ — بک‌تست طلا", text_color=color.white, bgcolor=color.new(color.blue, 0))
+        table.cell(stats, 1, 0, "دمو — نه تضمین سود", text_color=color.white, bgcolor=color.new(color.blue, 0))
+        table.cell(stats, 0, 1, "معاملات تکمیل‌شده", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 1, str.tostring(n), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 2, "تعداد خروج‌ها (TP1+TP2+SL+BE+TRAIL)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 2, str.tostring(totalExits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 3, "خرید / فروش", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 3, str.tostring(longN) + " / " + str.tostring(shortN), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 4, "Win Rate", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 4, str.tostring(winRate, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 5, "Win Rate خرید", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 5, str.tostring(longWR, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 6, "Win Rate فروش", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 6, str.tostring(shortWR, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 7, "Profit Factor", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 7, na(pf) ? "—" : str.tostring(pf, "#.##"), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 8, "سود خالص", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 8, str.tostring(totProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 9, "سود ناخالص", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 9, str.tostring(grossWin, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 10, "ضرر ناخالص", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 10, str.tostring(grossLoss, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 11, "حداکثر افت (بسته‌شدن کندل)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 11, str.tostring(maxDD, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 12, "حداکثر افت (٪)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 12, str.tostring(maxDDPct, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 13, "حداکثر افت (معاملات بسته)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 13, str.tostring(maxDDReal, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 14, "حداکثر افت (معاملات بسته، ٪)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 14, str.tostring(maxDDRealPct, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 15, "میانگین R", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 15, str.tostring(avgR, "#.##") + "R", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 16, "TP1 (نیمه‌خروج)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 16, str.tostring(tp1Total) + (tp1Inferred > 0 ? " (استنتاجی " + str.tostring(tp1Inferred) + ")" : ""), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 17, "TP2", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 17, str.tostring(tp2Hits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 18, "SL", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 18, str.tostring(slHits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 19, "BE", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 19, str.tostring(beHits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 20, "Trailing", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 20, str.tostring(trailHits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 21, "بسته‌شدن دیگر", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 21, str.tostring(otherCloses), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 22, "میانگین سود هر معامله", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 22, str.tostring(avgProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 23, "حداکثر ضرر پشت سر هم", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 23, str.tostring(maxConsecLoss), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 24, "معاملات تطبیق‌نیافته (شناسه)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 24, str.tostring(unmatchedN), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 25, "معاملات با ریسک تخمینی", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 25, str.tostring(estRiskN), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 26, "عملکرد OB", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 26, str.tostring(obN) + " معامله، " + str.tostring(obWR, "#.##") + "٪، " + str.tostring(obProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 27, "عملکرد ۱-۲-۳", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 27, str.tostring(xN) + " معامله، " + str.tostring(xWR, "#.##") + "٪، " + str.tostring(xProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 28, "سشن آسیا", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 28, str.tostring(array.get(sN, 0)) + " معامله، " + str.tostring(array.get(sP, 0), format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 29, "سشن لندن", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 29, str.tostring(array.get(sN, 1)) + " معامله، " + str.tostring(array.get(sP, 1), format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 30, "سشن نیویورک", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 30, str.tostring(array.get(sN, 2)) + " معامله، " + str.tostring(array.get(sP, 2), format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 31, "سشن هم‌پوشانی/سایر", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 31, str.tostring(array.get(sN, 3)) + " معامله، " + str.tostring(array.get(sP, 3), format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 32, "کمیسیون کل", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 32, str.tostring(totComm, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 0, 33, "لغزش تخمینی کل", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(stats, 1, 33, str.tostring(totSlip, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    // جدول ماهانه: ۶ ماه اخیر (۰ = ماه جاری).
+    if not na(monthly)
+        table.cell(monthly, 0, 0, "ماه", text_color=color.white, bgcolor=color.new(color.blue, 0))
+        table.cell(monthly, 1, 0, "معاملات", text_color=color.white, bgcolor=color.new(color.blue, 0))
+        table.cell(monthly, 2, 0, "سود خالص", text_color=color.white, bgcolor=color.new(color.blue, 0))
+        for mi = 0 to 5
+            int mcode = curMonthCode - mi
+            int my = int(math.floor((mcode - 1) / 12))
+            int mm = mcode - my * 12
+            string mlabel = str.tostring(my) + "-" + (mm < 10 ? "0" + str.tostring(mm) : str.tostring(mm))
+            table.cell(monthly, 0, mi + 1, mlabel, text_color=color.white, bgcolor=color.new(color.gray, 0))
+            table.cell(monthly, 1, mi + 1, str.tostring(array.get(mN, mi)), text_color=color.white, bgcolor=color.new(color.gray, 0))
+            table.cell(monthly, 2, mi + 1, str.tostring(array.get(mP, mi), format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+
+// ───────────────────────── داشبورد فارسی ─────────────────────────
+// چهار جدول جدا، بدون هم‌پوشانی (بخش ۸): MTF بالا-راست، Decision پایین-چپ،
+// Stats پایین-راست (بخش آمار)، Monthly پایین-وسط (بخش آمار).
+// L-5: جدول فقط وقتی ساخته می‌شود که ورودی نمایش آن روشن باشد.
+// همه سلول‌ها فقط روی barstate.islast نوشته می‌شوند (مثل ۵٫۲).
+var table mtfTbl = showMTF ? table.new(position.top_right, 3, 10, border_width=1) : na
+var table decisionTbl = showDecision ? table.new(position.bottom_left, 2, 20, border_width=1) : na
+
+// ── آخرین رویداد (اصلاح L-4): ترتیب ثابت — ورود > بسته‌شدن > Sweep > BOS >
+// CHoCH > لمس OB > FVG > ‏۱-۲-۳ > پرچم. اولین مورد در این ترتیب که در کندل
+// جاری رخ داده باشد، نشان داده می‌شود و تا رویداد بعدی می‌ماند.
+var string lastSignal = "—"
+if enteredThisBar
+    lastSignal := "ورود معامله"
+else if tradeJustClosed
+    lastSignal := "بسته‌شدن معامله"
+else if sweepUpEvt or sweepDnEvt
+    lastSignal := "جاروی نقدینگی"
+else if bosUpEvt or bosDnEvt
+    lastSignal := "شکست ساختار " + (bosUpEvt ? "صعودی" : "نزولی")
+else if chochUpEvt or chochDnEvt
+    lastSignal := "تغییر روند " + (chochUpEvt ? "صعودی" : "نزولی")
+else if obBullTouchEvt or obBearTouchEvt
+    lastSignal := "لمس اردر بلاک " + (obBullTouchEvt ? "صعودی" : "نزولی")
+else if fvgBullEvt or fvgBearEvt
+    lastSignal := "گپ ارزش منصفانه " + (fvgBullEvt ? "صعودی" : "نزولی")
+else if bull123Evt or bear123Evt
+    lastSignal := "الگوی ۱-۲-۳ " + (bull123Evt ? "صعودی" : "نزولی")
+else if bullFlagEvt or bearFlagEvt
+    lastSignal := "پرچم " + (bullFlagEvt ? "صعودی" : "نزولی") + " (آزمایشی)"
+
+if barstate.islast
+    // ── جدول MTF ──
+    if not na(mtfTbl)
+        table.cell(mtfTbl, 0, 0, "تایم‌فریم", text_color=color.white, bgcolor=color.new(color.blue, 0))
+        table.cell(mtfTbl, 1, 0, "روند", text_color=color.white, bgcolor=color.new(color.blue, 0))
+        table.cell(mtfTbl, 2, 0, "آخرین کندل", text_color=color.white, bgcolor=color.new(color.blue, 0))
+        // 10S — فقط تأیید ورود؛ هرگز جهت نمی‌دهد.
+        table.cell(mtfTbl, 0, 1, "10S (فقط تأیید)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 1, 1, not valid_s10 ? "N/A" : trend_s10 == 1 ? "▲ صعودی" : trend_s10 == -1 ? "▼ نزولی" : "— خنثی", text_color=color.white, bgcolor=not valid_s10 ? color.new(color.yellow, 0) : trend_s10 == 1 ? color.new(color.green, 0) : trend_s10 == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+        table.cell(mtfTbl, 2, 1, not valid_s10 ? "N/A — داده ناکافی" : str.format_time(t_s10, "HH:mm", "Asia/Tehran") + " ✓" + (timeframe.period == "10S" ? " (چارت)" : ""), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 0, 2, "1", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 1, 2, not valid_m01 ? "N/A" : trend_m01 == 1 ? "▲ صعودی" : trend_m01 == -1 ? "▼ نزولی" : "— خنثی", text_color=color.white, bgcolor=not valid_m01 ? color.new(color.yellow, 0) : trend_m01 == 1 ? color.new(color.green, 0) : trend_m01 == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+        table.cell(mtfTbl, 2, 2, not valid_m01 ? "N/A — داده ناکافی" : str.format_time(t_m01, "HH:mm", "Asia/Tehran") + " ✓" + (timeframe.period == "1" ? " (چارت)" : ""), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 0, 3, "5", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 1, 3, not valid_m05 ? "N/A" : trend_m05 == 1 ? "▲ صعودی" : trend_m05 == -1 ? "▼ نزولی" : "— خنثی", text_color=color.white, bgcolor=not valid_m05 ? color.new(color.yellow, 0) : trend_m05 == 1 ? color.new(color.green, 0) : trend_m05 == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+        table.cell(mtfTbl, 2, 3, not valid_m05 ? "N/A — داده ناکافی" : str.format_time(t_m05, "HH:mm", "Asia/Tehran") + " ✓" + (timeframe.period == "5" ? " (چارت)" : ""), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 0, 4, "15", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 1, 4, not valid_m15 ? "N/A" : trend_m15 == 1 ? "▲ صعودی" : trend_m15 == -1 ? "▼ نزولی" : "— خنثی", text_color=color.white, bgcolor=not valid_m15 ? color.new(color.yellow, 0) : trend_m15 == 1 ? color.new(color.green, 0) : trend_m15 == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+        table.cell(mtfTbl, 2, 4, not valid_m15 ? "N/A — داده ناکافی" : str.format_time(t_m15, "HH:mm", "Asia/Tehran") + " ✓" + (timeframe.period == "15" ? " (چارت)" : ""), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 0, 5, "60", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 1, 5, not valid_h01 ? "N/A" : trend_h01 == 1 ? "▲ صعودی" : trend_h01 == -1 ? "▼ نزولی" : "— خنثی", text_color=color.white, bgcolor=not valid_h01 ? color.new(color.yellow, 0) : trend_h01 == 1 ? color.new(color.green, 0) : trend_h01 == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+        table.cell(mtfTbl, 2, 5, not valid_h01 ? "N/A — داده ناکافی" : str.format_time(t_h01, "HH:mm", "Asia/Tehran") + " ✓" + (timeframe.period == "60" ? " (چارت)" : ""), text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 0, 6, "240", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(mtfTbl, 1, 6, not valid_h04 ? "N/A" : trend_h04 == 1 ? "▲ صعودی" : trend_h04 == -1 ? "▼ نزولی" : "— خنثی", text_color=color.white, bgcolor=not valid_h04 ? color.new(color.yellow, 0) : trend_h04 == 1 ? color.new(color.green, 0) : trend_h04 == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))

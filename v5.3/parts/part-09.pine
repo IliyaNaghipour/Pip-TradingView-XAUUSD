@@ -1,0 +1,150 @@
+
+// ناحیه هنوز در لیست ناحیه‌ها هست؟ (حذف از لیست یعنی باطل/منقضی شده است.)
+f_zoneAlive(int zid) =>
+    bool alive = false
+    if array.size(obZones) > 0
+        for i = 0 to array.size(obZones) - 1
+            OBZone z = array.get(obZones, i)
+            if z.id == zid
+                alive := true
+    alive
+
+// آخرین کندلی که قیمت از ناحیه خارج شد (na یعنی هنوز هرگز خارج نشده — لمس اول).
+f_zoneExitBar(int zid) =>
+    int eb = na
+    if array.size(obZones) > 0
+        for i = 0 to array.size(obZones) - 1
+            OBZone z = array.get(obZones, i)
+            if z.id == zid
+                eb := z.exitBar
+    eb
+
+// هم‌پوشانی FVG معتبر هم‌جهت با یک بازه قیمتی (برای پنجره ۱٫۵ برابری G5).
+f_fvgOverlapZone(float bot, float top, int dir) =>
+    bool ov = false
+    if array.size(fvgZones) > 0
+        for i = 0 to array.size(fvgZones) - 1
+            FVGZone fz = array.get(fvgZones, i)
+            if not fz.obInvalid and fz.dir == dir and f_overlap(bot, top, fz.bottom, fz.top)
+                ov := true
+    ov
+
+// رسم خطوط ستاپ در انتظار: حالت ۱ نقطه‌چین خاکستری، حالت ۲ پررنگ.
+f_drawPendLines(int dir, float entry, float sl, float tp1, float tp2, string srctxt, bool ready) =>
+    line slL = line.new(bar_index, sl, bar_index + 20, sl, color=color.red, style=ready ? line.style_solid : line.style_dashed, width=ready ? 2 : 1)
+    line t1L = line.new(bar_index, tp1, bar_index + 20, tp1, color=color.green, style=ready ? line.style_solid : line.style_dashed, width=ready ? 2 : 1)
+    line t2L = line.new(bar_index, tp2, bar_index + 20, tp2, color=color.green, style=ready ? line.style_solid : line.style_dotted, width=ready ? 2 : 1)
+    label rL = label.new(bar_index + 20, tp1, (ready ? "آماده ورود | " : "در انتظار تأیید — ورود: ") + str.tostring(entry, format.mintick) + " | حد ضرر " + str.tostring(sl, format.mintick) + " | " + srctxt, style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+    [slL, t1L, t2L, rL]
+
+// ───────────────────────── مدیریت ریسک — ستاپ در انتظار و معامله باز، جدا ─────────────────────────
+// دو حالت مستقل:
+//  الف) ستاپ در انتظار (pend*): ماشین حالت pendState (بخش ۳٫۴):
+//     ۰ = هیچ، ۱ = در انتظار تأیید (G1–G4 پاس؛ منتظر G5–G8)،
+//     ۲ = آماده ورود (همه گیت‌ها پاس؛ ورود در همین کندل)، ۳ = منقضی (یک کندل نمایش).
+//  ب) معامله باز (trade*): سطوح «قفل‌شده» معامله‌ای که واقعاً باز شده است؛ ستاپ جدید
+//     هرگز آن‌ها را عوض نمی‌کند و فقط وقتی پوزیشن واقعاً بسته شد ریست می‌شوند.
+// خطوط روی چارت: وقتی معامله باز است، سطوح قفل‌شده معامله را نشان می‌دهند؛ وقتی
+// پوزیشنی باز نیست، ستاپ در انتظار را نشان می‌دهند (حالت ۱: نقطه‌چین خاکستری؛
+// حالت ۲: پررنگ سبز/قرمز).
+var line slLine = na
+var line tp1Line = na
+var line tp2Line = na
+var label riskLabel = na
+// الف) ستاپ در انتظار
+var int pendState = 0
+var bool pendActive = false
+var int pendDir = 0
+var float pendEntry = na
+var float pendSL = na
+var float pendTP1 = na
+var float pendTP2 = na
+var int pendId = na
+var string pendSrc = ""
+var float pendQual = na
+var int pendSetupBar = na
+var float pendZoneTop = na
+var float pendZoneBot = na
+var bool pendConfirmed = false
+var bool pendConfBos = false
+var bool pendConfRej = false
+var bool pendFvgOverlap = false
+var string pendBlockReason = ""
+var label pendExpiredLbl = na
+// ب) معامله باز
+var bool tradeActive = false
+var int tradeDir = 0
+var float tradeEntry = na
+var float tradeSL = na
+var float tradeTP1 = na
+var float tradeTP2 = na
+var int tradeId = na
+var string tradeSrc = ""
+var int tradeEntryBar = na
+
+// ── گیت‌های G1–G3 در لحظه لمس (بخش ۳٫۱) ──
+// G1: جهت اصلی (D + 4H)؛ هر دو N/A → ورود بلوکه می‌شود.
+// G2: رژیم مخالف نیست (W + M)؛ رژیم نامشخص → عبور با یادداشت.
+// G3: ستاپ مخالف نیست (1H + 15M)؛ هر دو N/A → عبور با یادداشت.
+bool g1Long = not dirUnknown and dirScore >= 2
+bool g1Short = not dirUnknown and dirScore <= -2
+bool g2Long = regimeUnknown or regimeScore > -3
+bool g2Short = regimeUnknown or regimeScore < 3
+bool g3Long = setupUnknown or setupScore >= 0
+bool g3Short = setupUnknown or setupScore <= 0
+string g123FailLong = dirUnknown ? "داده جهت در دسترس نیست" : dirScore < 2 ? "جهت MTF لانگ نیست" : not g2Long ? "رژیم نزولی" : not g3Long ? "ستاپ مخالف" : ""
+string g123FailShort = dirUnknown ? "داده جهت در دسترس نیست" : dirScore > -2 ? "جهت MTF شورت نیست" : not g2Short ? "رژیم صعودی" : not g3Short ? "ستاپ مخالف" : ""
+
+// ── کندل برگشتی چارت (تعریف §۲٫۳ روی کندل تأییدشده جاری) — جایگزین Micro وقتی Micro نامعتبر است ──
+float chBody = math.abs(close - open)
+float chWickLo = math.min(open, close) - low
+float chWickHi = high - math.max(open, close)
+bool chartRejBull = atrOk and chWickLo >= 2.0 * chBody and chWickLo >= 0.3 * atr and close > open
+bool chartRejBear = atrOk and chWickHi >= 2.0 * chBody and chWickHi >= 0.3 * atr and close < open
+
+// ── تأیید Micro (G5): BOS هم‌جهت / کندل برگشتی از microTF1 یا microTF2 ──
+bool microBosLong = (micro1Valid and mBos1 == 1) or (micro2Valid and mBos2 == 1)
+bool microBosShort = (micro1Valid and mBos1 == -1) or (micro2Valid and mBos2 == -1)
+bool microRejLong = (micro1Valid and mRej1 == 1) or (micro2Valid and mRej2 == 1) or chartRejBull
+bool microRejShort = (micro1Valid and mRej1 == -1) or (micro2Valid and mRej2 == -1) or chartRejBear
+
+// ── ساخت ستاپ در انتظار: لمس معتبر + G1–G3 ──
+bool newSetup = false
+int newSetupDir = 0
+float newSetupEntry = na
+float newSetupSL = na
+int newSetupId = na
+string newSetupSrc = ""
+float newSetupQual = na
+float newSetupTop = na
+float newSetupBot = na
+bool newSetupFvg = false
+var string lastSetupReject = ""
+if barstate.isconfirmed
+    // لمس OB صعودی — فقط اگر ستاپ فعالی از همان ناحیه نباشد (§۳٫۲ مورد ۷).
+    if obBullTouchEvt and touchBullScore >= effMinOBScore and (pendState != 1 and pendState != 2 or pendId != touchBullId)
+        if g1Long and g2Long and g3Long
+            // RetestMode: لمس دوباره فقط اگر قیمت حداقل retestMinBars کندل از ناحیه دور شده باشد.
+            bool retestOk = true
+            if obRetestMode
+                int exBar = f_zoneExitBar(touchBullId)
+                retestOk := na(exBar) or bar_index - exBar >= retestMinBars
+            if retestOk
+                newSetup := true
+                newSetupDir := 1
+                newSetupEntry := close
+                newSetupSL := touchBullBot - atr * effSlBuffer
+                newSetupId := touchBullId
+                newSetupSrc := "OB+"
+                newSetupQual := touchBullScore
+                newSetupTop := touchBullTop
+                newSetupBot := touchBullBot
+                newSetupFvg := f_fvgOverlapZone(touchBullBot, touchBullTop, 1)
+        else
+            lastSetupReject := g123FailLong
+    else if obBearTouchEvt and touchBearScore >= effMinOBScore and (pendState != 1 and pendState != 2 or pendId != touchBearId)
+        if g1Short and g2Short and g3Short
+            bool retestOk = true
+            if obRetestMode
+                int exBar = f_zoneExitBar(touchBearId)
+                retestOk := na(exBar) or bar_index - exBar >= retestMinBars

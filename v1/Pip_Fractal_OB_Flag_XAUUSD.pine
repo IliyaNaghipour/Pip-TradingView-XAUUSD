@@ -1,0 +1,238 @@
+//@version=5
+// Pip — Fractal / Trend / Order Block / 1-2-3 / Flag
+// Tuned for XAUUSD (Gold). Works on any symbol / timeframe.
+// Educational tool only — NOT a trading signal. Use on demo first.
+// How to use (TradingView):
+//   Pine Editor -> Open -> paste this file -> Add to chart
+//   Best for XAUUSD: H1 for trend/structure, M15 for entry.
+//   MT5 desktop version with the same logic is in Pip_Fractal_OB_Flag_XAUUSD.mq5
+
+indicator("Pip — Fractal / OB / 1-2-3 / Flag | XAUUSD", shorttitle="Pip OB Flag", overlay=true,
+     max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ───────────────────────── Inputs ─────────────────────────
+grpTrend   = "Trend"
+grpFractal = "Fractal"
+grpOB      = "Order Block (XAUUSD tuned)"
+grp123     = "1-2-3 Pattern"
+grpFlag    = "Flag"
+
+showTrend   = input.bool(true,  "Show trend (EMA 50/200 + background)", group=grpTrend)
+emaFastLen  = input.int(50,  "EMA fast", minval=5, group=grpTrend)
+emaSlowLen  = input.int(200, "EMA slow", minval=20, group=grpTrend)
+
+showFractal = input.bool(true, "Show fractals", group=grpFractal)
+fractalLen  = input.int(2,   "Fractal bars each side", minval=1, maxval=5, group=grpFractal)
+
+showOB      = input.bool(true,  "Show order blocks", group=grpOB)
+obLookback  = input.int(50,   "OB lookback (bars)", minval=10, maxval=200, group=grpOB)
+obDispATR   = input.float(1.0, "Min. displacement (x ATR 14)", minval=0.3, step=0.1, group=grpOB)
+obMaxBoxes  = input.int(8,    "Max OB boxes kept", minval=2, maxval=20, group=grpOB)
+obExtend    = input.int(30,   "OB box extension (bars)", minval=5, maxval=100, group=grpOB)
+
+show123     = input.bool(true, "Show 1-2-3", group=grp123)
+
+showFlag    = input.bool(true,  "Show flags", group=grpFlag)
+flagPoleATR = input.float(1.5, "Flag pole min. move (x ATR 14, 5 bars)", minval=0.5, step=0.1, group=grpFlag)
+flagMaxRet  = input.float(0.5, "Flag max. retracement of pole", minval=0.2, maxval=0.8, step=0.05, group=grpFlag)
+
+showAlerts  = input.bool(true, "Enable alert conditions", group="Alerts")
+
+// ───────────────────────── Core ─────────────────────────
+atr         = ta.atr(14)
+emaFast     = ta.ema(close, emaFastLen)
+emaSlow     = ta.ema(close, emaSlowLen)
+trendUp     = close > emaFast and emaFast > emaSlow
+trendDown   = close < emaFast and emaFast < emaSlow
+trendState  = trendUp ? 1 : trendDown ? -1 : 0
+
+plot(emaFast, "EMA 50",  color=color.new(color.blue, 0))
+plot(emaSlow, "EMA 200", color=color.new(color.orange, 0))
+bgcolor(showTrend and trendUp ? color.new(color.green, 92) : showTrend and trendDown ? color.new(color.red, 92) : na, title="Trend background")
+
+// Trend label (top-left, updates every bar)
+var label trendLabel = na
+if barstate.islast and showTrend
+    txt = trendState == 1 ? "TREND: UP  |  XAUUSD — trade longs only" : trendState == -1 ? "TREND: DOWN  |  XAUUSD — trade shorts only" : "TREND: SIDEWAYS  |  XAUUSD — no clear trend, wait"
+    col = trendState == 1 ? color.green : trendState == -1 ? color.red : color.gray
+    if na(trendLabel)
+        trendLabel := label.new(bar_index, high, txt, style=label.style_label_down, color=col, textcolor=color.white, size=size.small)
+    else
+        label.set_xy(trendLabel, bar_index, high)
+        label.set_text(trendLabel, txt)
+        label.set_color(trendLabel, col)
+
+// ───────────────────────── Fractals (Bill Williams, 5 bars) ─────────────────────────
+ph = ta.pivothigh(high, fractalLen, fractalLen)
+pl = ta.pivotlow(low, fractalLen, fractalLen)
+
+plotshape(showFractal and not na(ph), title="Fractal Up", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, offset=-fractalLen)
+plotshape(showFractal and not na(pl), title="Fractal Down", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny, offset=-fractalLen)
+
+// Fractal break = close above last fractal high / below last fractal low
+var float lastPh = na
+var float lastPl = na
+if not na(ph)
+    lastPh := ph
+if not na(pl)
+    lastPl := pl
+fractalBreakUp   = not na(lastPh) and ta.crossover(close, lastPh)
+fractalBreakDown = not na(lastPl) and ta.crossunder(close, lastPl)
+
+// ───────────────────────── Order Blocks ─────────────────────────
+// Idea: a strong displacement candle. The OB is the LAST opposite candle
+// before that displacement. Box = that candle's high/low, extended right.
+// A box is removed ("mitigated") when price closes through it.
+// Gold note: XAUUSD moves fast, so displacement is measured in ATR,
+// not in fixed dollars. Default 1.0 x ATR(14).
+var box[] bullBoxes = array.new_box()
+var box[] bearBoxes = array.new_box()
+
+bullDisp = close > open and (close - open) > atr * obDispATR and close > high[1]
+bearDisp = close < open and (open - close) > atr * obDispATR and close < low[1]
+
+findLastBearish(_n) =>
+    int idx = na
+    for i = 1 to _n
+        if close[i] < open[i]
+            idx := i
+            break
+    idx
+
+findLastBullish(_n) =>
+    int idx = na
+    for i = 1 to _n
+        if close[i] > open[i]
+            idx := i
+            break
+    idx
+
+if showOB and bullDisp and barstate.isconfirmed
+    int bi = findLastBearish(5)
+    if not na(bi)
+        box b = box.new(bar_index[bi], high[bi], bar_index + obExtend, low[bi],
+             bgcolor=color.new(color.green, 80), border_color=color.new(color.green, 0), border_width=1)
+        array.push(bullBoxes, b)
+        if array.size(bullBoxes) > obMaxBoxes
+            box old = array.shift(bullBoxes)
+            box.delete(old)
+
+if showOB and bearDisp and barstate.isconfirmed
+    int bi = findLastBullish(5)
+    if not na(bi)
+        box b = box.new(bar_index[bi], high[bi], bar_index + obExtend, low[bi],
+             bgcolor=color.new(color.red, 80), border_color=color.new(color.red, 0), border_width=1)
+        array.push(bearBoxes, b)
+        if array.size(bearBoxes) > obMaxBoxes
+            box old = array.shift(bearBoxes)
+            box.delete(old)
+
+// Extend + mitigate boxes, and detect a touch (price entering the zone)
+obBullTouch = false
+obBearTouch = false
+if array.size(bullBoxes) > 0
+    for i = array.size(bullBoxes) - 1 to 0
+        box b = array.get(bullBoxes, i)
+        float top = box.get_top(b)
+        float bot = box.get_bottom(b)
+        box.set_right(b, bar_index + obExtend)
+        if close < bot
+            box.delete(b)
+            array.remove(bullBoxes, i)
+        else if low <= top and low >= bot
+            obBullTouch := true
+if array.size(bearBoxes) > 0
+    for i = array.size(bearBoxes) - 1 to 0
+        box b = array.get(bearBoxes, i)
+        float top = box.get_top(b)
+        float bot = box.get_bottom(b)
+        box.set_right(b, bar_index + obExtend)
+        if close > top
+            box.delete(b)
+            array.remove(bearBoxes, i)
+        else if high >= bot and high <= top
+            obBearTouch := true
+
+plotshape(showOB and obBullTouch, title="OB Bull Touch", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), text="OB", textcolor=color.white, size=size.tiny)
+plotshape(showOB and obBearTouch, title="OB Bear Touch", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), text="OB", textcolor=color.white, size=size.tiny)
+
+// ───────────────────────── 1-2-3 Pattern ─────────────────────────
+// Bullish 1-2-3: pivot low (1) -> pivot high (2) -> higher pivot low (3)
+// -> break above (2). Bearish is the mirror image.
+// Pivots are confirmed 2 bars late, so labels appear with offset -2.
+var float p1Low  = na
+var float p2High = na
+var float p3Low  = na
+var float p1High = na
+var float p2Low  = na
+var float p3High = na
+var int   bull123Stage = 0
+var int   bear123Stage = 0
+
+if not na(pl)
+    if na(p1Low) or bull123Stage == 0
+        p1Low := pl
+        bull123Stage := 1
+    else if bull123Stage == 1 and not na(p2High) and pl > p1Low
+        p3Low := pl
+        bull123Stage := 3
+if not na(ph)
+    if bull123Stage == 1
+        p2High := ph
+        bull123Stage := 2
+
+if not na(ph)
+    if na(p1High) or bear123Stage == 0
+        p1High := ph
+        bear123Stage := 1
+    else if bear123Stage == 1 and not na(p2Low) and ph < p1High
+        p3High := ph
+        bear123Stage := 3
+if not na(pl)
+    if bear123Stage == 1
+        p2Low := pl
+        bear123Stage := 2
+
+bull123Break = show123 and bull123Stage == 3 and not na(p2High) and ta.crossover(close, p2High)
+bear123Break = show123 and bear123Stage == 3 and not na(p2Low) and ta.crossunder(close, p2Low)
+
+if bull123Break
+    bull123Stage := 0
+    p1Low := na
+    p2High := na
+    p3Low := na
+if bear123Break
+    bear123Stage := 0
+    p1High := na
+    p2Low := na
+    p3High := na
+
+plotshape(bull123Break, title="1-2-3 Bull", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), text="1-2-3", textcolor=color.white, size=size.small)
+plotshape(bear123Break, title="1-2-3 Bear", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), text="1-2-3", textcolor=color.white, size=size.small)
+
+// ───────────────────────── Flag ─────────────────────────
+// Bull flag: strong 5-bar up pole, then a short, shallow pullback
+// (range < 50% of the pole), then a close above the pullback high.
+// Bear flag is the mirror image. This is a helper — always check
+// the flag is in the direction of the higher-timeframe trend.
+poleUp   = close - close[5]
+poleDown = close[5] - close
+flagRangeHigh = ta.highest(high, 5)
+flagRangeLow  = ta.lowest(low, 5)
+flagRange     = flagRangeHigh - flagRangeLow
+
+bullFlag = showFlag and poleUp > atr * flagPoleATR and flagRange < poleUp * flagMaxRet and close > flagRangeHigh[1] and close[1] <= flagRangeHigh[1]
+bearFlag = showFlag and poleDown > atr * flagPoleATR and flagRange < poleDown * flagMaxRet and close < flagRangeLow[1] and close[1] >= flagRangeLow[1]
+
+plotshape(bullFlag, title="Bull Flag Break", style=shape.labelup, location=location.belowbar, color=color.new(color.teal, 0), text="FLAG", textcolor=color.white, size=size.small)
+plotshape(bearFlag, title="Bear Flag Break", style=shape.labeldown, location=location.abovebar, color=color.new(color.maroon, 0), text="FLAG", textcolor=color.white, size=size.small)
+
+// ───────────────────────── Alerts ─────────────────────────
+alertcondition(showAlerts and obBullTouch, title="OB Bull Touch", message="Pip XAUUSD: price touched a bullish order block")
+alertcondition(showAlerts and obBearTouch, title="OB Bear Touch", message="Pip XAUUSD: price touched a bearish order block")
+alertcondition(showAlerts and bull123Break, title="1-2-3 Bull Break", message="Pip XAUUSD: bullish 1-2-3 broke point 2")
+alertcondition(showAlerts and bear123Break, title="1-2-3 Bear Break", message="Pip XAUUSD: bearish 1-2-3 broke point 2")
+alertcondition(showAlerts and bullFlag, title="Bull Flag Break", message="Pip XAUUSD: bull flag breakout")
+alertcondition(showAlerts and bearFlag, title="Bear Flag Break", message="Pip XAUUSD: bear flag breakout")
+alertcondition(showAlerts and fractalBreakUp, title="Fractal Break Up", message="Pip XAUUSD: fractal high broken")
+alertcondition(showAlerts and fractalBreakDown, title="Fractal Break Down", message="Pip XAUUSD: fractal low broken")

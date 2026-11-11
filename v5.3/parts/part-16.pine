@@ -1,0 +1,37 @@
+    alert("پیپ ۵٫۳ | " + alSym + "لمس اردر بلاک صعودی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alOBBear and obBearTouchEvt
+    alert("پیپ ۵٫۳ | " + alSym + "لمس اردر بلاک نزولی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alBOSBull and bosUpEvt
+    alert("پیپ ۵٫۳ | " + alSym + "شکست ساختار صعودی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alBOSBear and bosDnEvt
+    alert("پیپ ۵٫۳ | " + alSym + "شکست ساختار نزولی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alCHBull and chochUpEvt
+    alert("پیپ ۵٫۳ | " + alSym + "تغییر روند صعودی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alCHBear and chochDnEvt
+    alert("پیپ ۵٫۳ | " + alSym + "تغییر روند نزولی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alSwpBull and sweepUpEvt
+    alert("پیپ ۵٫۳ | " + alSym + "جاروی نقدینگی بالای سقف | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alSwpBear and sweepDnEvt
+    alert("پیپ ۵٫۳ | " + alSym + "جاروی نقدینگی زیر کف | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFVGBull and fvgBullEvt
+    alert("پیپ ۵٫۳ | " + alSym + "گپ ارزش منصفانه صعودی ساخته شد | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFVGBear and fvgBearEvt
+    alert("پیپ ۵٫۳ | " + alSym + "گپ ارزش منصفانه نزولی ساخته شد | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if al123Bull and bull123Evt
+    alert("پیپ ۵٫۳ | " + alSym + "الگوی ۱-۲-۳ صعودی نقطه ۲ را شکست | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if al123Bear and bear123Evt
+    alert("پیپ ۵٫۳ | " + alSym + "الگوی ۱-۲-۳ نزولی نقطه ۲ را شکست | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFlgBull and bullFlagEvt
+    alert("پیپ ۵٫۳ | " + alSym + "پرچم صعودی شکست (آزمایشی) | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFlgBear and bearFlagEvt
+    alert("پیپ ۵٫۳ | " + alSym + "پرچم نزولی شکست (آزمایشی) | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+// هشدار پر شدن سفارش — جدا از هشدارهای تحلیلی.
+// ورود: فقط وقتی strategy.entry واقعاً اجرا شد (enteredThisBar، اصلاح M-1)؛
+// ستاپ تازه هنگام باز بودن معامله هیچ هشداری تولید نمی‌کند.
+// بسته‌شدن: در کندلی که پوزیشن واقعاً صفر شد (tradeJustClosed) — یک کندل
+// تأخیر دارد (M-2، محدودیت Pine؛ متن هشدار عوض نمی‌شود).
+if alOrderFill and enteredThisBar
+    alert("پیپ ۵٫۳ | " + alSym + "ورود معامله " + (tradeDir == 1 ? "خرید" : "فروش") + " | " + tradeSrc + " #" + f_pad6(tradeId) + " | ورود " + str.tostring(tradeEntry, format.mintick) + " | حد ضرر " + str.tostring(tradeSL, format.mintick), alert.freq_once_per_bar_close)
+if alOrderFill and tradeJustClosed
+    alert("پیپ ۵٫۳ | " + alSym + "معامله بسته شد | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)

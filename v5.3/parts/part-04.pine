@@ -1,0 +1,150 @@
+    swingLoSwept := true
+    sweepDnEvt := true
+    if showL2
+        label lb = label.new(bar_index, low, "SWP", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.purple, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabelsL2, lb)
+        if array.size(evtLabelsL2) > maxLabels
+            label.delete(array.shift(evtLabelsL2))
+
+// ───────────────────────── حافظه کوتاه‌مدت رویدادها (برای امتیاز OB) ─────────────────────────
+// BOS/CHoCH و جاروی نقدینگی تا چند کندل قبل از ساخت OB هم برای امتیاز حساب می‌شوند،
+// نه فقط رویداد همان کندل (ورودی‌های structLookback و effSweepLookback پروفایل).
+var int lastStructUpBar = na
+var int lastStructDnBar = na
+var int lastSweepUpBar = na
+var int lastSweepDnBar = na
+if bosUpEvt or chochUpEvt
+    lastStructUpBar := bar_index
+if bosDnEvt or chochDnEvt
+    lastStructDnBar := bar_index
+if sweepUpEvt
+    lastSweepUpBar := bar_index
+if sweepDnEvt
+    lastSweepDnBar := bar_index
+bool structUpRecent = not na(lastStructUpBar) and bar_index - lastStructUpBar <= structLookback
+bool structDnRecent = not na(lastStructDnBar) and bar_index - lastStructDnBar <= structLookback
+bool sweepUpRecent = not na(lastSweepUpBar) and bar_index - lastSweepUpBar <= effSweepLookback
+bool sweepDnRecent = not na(lastSweepDnBar) and bar_index - lastSweepDnBar <= effSweepLookback
+
+// ───────────────────────── توابع خالص (هیچ متغیر سراسری را تغییر نمی‌دهند) ─────────────────────────
+f_lastOpp(int dir, int n) =>
+    int idx = na
+    for i = 1 to n
+        if na(idx) and dir == 1 and close[i] < open[i]
+            idx := i
+        if na(idx) and dir == -1 and close[i] > open[i]
+            idx := i
+    // بررسی توالی (L-9): جابه‌جایی باید «اولین» حرکت قوی بعد از آن کندل باشد؛
+    // اگر بین کندل مخالف و کندل جابه‌جایی، یک جابه‌جایی مخالف‌جهت دیگر رخ داده
+    // باشد، آن کندل مخالف معتبر نیست و na برمی‌گردد.
+    if not na(idx) and idx > 1
+        for j = 1 to idx - 1
+            if dir == 1 and close[j] < open[j] and (open[j] - close[j]) > atr[j] * effObDispATR
+                idx := na
+            if dir == -1 and close[j] > open[j] and (close[j] - open[j]) > atr[j] * effObDispATR
+                idx := na
+    idx
+
+f_overlap(float cLow, float cHigh, float zBot, float zTop) =>
+    cLow <= zTop and cHigh >= zBot
+
+// ───────────────────────── گپ ارزش منصفانه ─────────────────────────
+bool fvgBullEvt = false
+bool fvgBearEvt = false
+
+bullFVGNew = low > high[2] and close > open
+bearFVGNew = high < low[2] and close < open
+// ساخت گپ همیشه انجام می‌شود (روی امتیاز OB اثر دارد)؛ باکس فقط وقتی نمایش روشن باشد.
+if bullFVGNew and barstate.isconfirmed
+    float top = math.max(low, high[2])
+    float bot = math.min(low, high[2])
+    box b = na
+    if showFVG and showL2
+        b := box.new(bar_index - 2, top, bar_index + fvgExtend, bot, bgcolor=color.new(color.aqua, 86), border_color=color.new(color.aqua, 0))
+    FVGZone nz = FVGZone.new(b, top, bot, 1, fvgNextId, na, false, 0.0, false, false, false, bar_index - 2)
+    // ارتباط با OB هم‌جهت هم‌پوشان: شناسه OB در رکورد FVG ذخیره می‌شود؛ اگر آن OB
+    // باطل شود، FVG مرتبط هم «نامعتبر» علامت می‌خورد (نه حذف — تا تاریخچه پرشدگی بماند).
+    if array.size(obZones) > 0
+        for i = 0 to array.size(obZones) - 1
+            OBZone oz = array.get(obZones, i)
+            if oz.dir == 1 and f_overlap(bot, top, oz.bottom, oz.top)
+                nz.obId := oz.id
+    fvgNextId += 1
+    array.push(fvgZones, nz)
+    fvgBullEvt := true
+    while array.size(fvgZones) > fvgMaxTotal
+        FVGZone old = array.shift(fvgZones)
+        if not na(old.b)
+            box.delete(old.b)
+if bearFVGNew and barstate.isconfirmed
+    float top = math.max(low[2], high)
+    float bot = math.min(low[2], high)
+    box b = na
+    if showFVG and showL2
+        b := box.new(bar_index - 2, top, bar_index + fvgExtend, bot, bgcolor=color.new(color.fuchsia, 86), border_color=color.new(color.fuchsia, 0))
+    FVGZone nz = FVGZone.new(b, top, bot, -1, fvgNextId, na, false, 0.0, false, false, false, bar_index - 2)
+    // ارتباط با OB هم‌جهت هم‌پوشان: شناسه OB در رکورد FVG ذخیره می‌شود.
+    if array.size(obZones) > 0
+        for i = 0 to array.size(obZones) - 1
+            OBZone oz = array.get(obZones, i)
+            if oz.dir == -1 and f_overlap(bot, top, oz.bottom, oz.top)
+                nz.obId := oz.id
+    fvgNextId += 1
+    array.push(fvgZones, nz)
+    fvgBearEvt := true
+    while array.size(fvgZones) > fvgMaxTotal
+        FVGZone old = array.shift(fvgZones)
+        if not na(old.b)
+            box.delete(old.b)
+
+// انقضای FVG بر اساس سن — جدا از حلقه به‌روزرسانی.
+if barstate.isconfirmed and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        if bar_index - z.bar > fvgMaxAge
+            if not na(z.b)
+                box.delete(z.b)
+            array.remove(fvgZones, i)
+
+// به‌روزرسانی FVGها — فقط روی کندل تأییدشده (مثل بک‌تست ۴٫۴).
+if barstate.isconfirmed and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        if not na(z.b)
+            box.set_right(z.b, bar_index + fvgExtend)
+        float gapSize = z.top - z.bottom
+        if z.dir == 1
+            float entered = math.max(0.0, z.top - low)
+            z.fillPct := gapSize > 0 ? math.min(entered / gapSize, 1.0) : 0.0
+            if low < z.top and close > z.bottom
+                z.mitigated := true
+            bool fullFill = low <= z.bottom
+            bool invalidNow = close < z.bottom
+            if fullFill or invalidNow
+                z.invalid := true
+                if not na(z.b)
+                    box.delete(z.b)
+                array.remove(fvgZones, i)
+        else
+            float entered = math.max(0.0, high - z.bottom)
+            z.fillPct := gapSize > 0 ? math.min(entered / gapSize, 1.0) : 0.0
+            if high > z.bottom and close < z.top
+                z.mitigated := true
+            bool fullFill = high >= z.top
+            bool invalidNow = close > z.top
+            if fullFill or invalidNow
+                z.invalid := true
+                if not na(z.b)
+                    box.delete(z.b)
+                array.remove(fvgZones, i)
+        // نمایش درصد پرشدگی: یک بار، وقتی پرشدگی به ۵۰٪ رسید
+        if showFVGFil and showL2 and not z.invalid and z.fillPct >= 0.5 and not z.fillShown
+            z.fillShown := true
+            label lb = label.new(bar_index, z.dir == 1 ? z.top : z.bottom, (z.dir == 1 ? "FVG+ " : "FVG- ") + str.tostring(math.round(z.fillPct * 100)) + "٪", xloc=xloc.bar_index, style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+            array.push(evtLabelsL2, lb)
+            if array.size(evtLabelsL2) > maxLabels
+                label.delete(array.shift(evtLabelsL2))
+
+// اگر نمایش FVG خاموش شد، فقط باکس‌ها پاک شوند — گپ‌ها برای امتیاز OB می‌مانند.
+// با روشن‌کردن دوباره نمایش، باکس گپ‌های زنده از روی هندسه ذخیره‌شده بازسازی
+// می‌شود (L-2) — هندسه ناحیه در UDT می‌ماند و فقط handle باکس na می‌شود.

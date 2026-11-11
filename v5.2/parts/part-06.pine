@@ -1,0 +1,150 @@
+        newSetupSrc := "123"
+    else if bear123Evt and htfTrendSafe == -1 and not na(sP3)
+        newSetup := true
+        newSetupDir := -1
+        newSetupEntry := close
+        newSetupSL := sP3 + atr * atrBuffer
+        newSetupId := -2
+        newSetupSrc := "123"
+
+if newSetup and not na(newSetupSL) and not na(newSetupEntry)
+    float riskAmt = math.abs(newSetupEntry - newSetupSL)
+    if riskAmt > 0
+        float tp1 = newSetupDir == 1 ? newSetupEntry + riskAmt * tp1RR : newSetupEntry - riskAmt * tp1RR
+        float tp2 = newSetupDir == 1 ? newSetupEntry + riskAmt * tp2RR : newSetupEntry - riskAmt * tp2RR
+        // ستاپ در انتظار همیشه ذخیره می‌شود، حتی وقتی معامله باز است؛
+        // اما خطوط روی چارت فقط وقتی معامله باز نیست با ستاپ جدید عوض می‌شوند.
+        pendActive := true
+        pendDir := newSetupDir
+        pendEntry := newSetupEntry
+        pendSL := newSetupSL
+        pendTP1 := tp1
+        pendTP2 := tp2
+        pendId := newSetupId
+        pendSrc := newSetupSrc
+        setupStoredNow := true
+        if not tradeActive
+            if not na(slLine)
+                line.delete(slLine)
+                line.delete(tp1Line)
+                line.delete(tp2Line)
+                label.delete(riskLabel)
+            if showRisk and showL3
+                slLine := line.new(bar_index, pendSL, bar_index + 20, pendSL, color=color.red, style=line.style_dashed)
+                tp1Line := line.new(bar_index, pendTP1, bar_index + 20, pendTP1, color=color.green, style=line.style_dashed)
+                tp2Line := line.new(bar_index, pendTP2, bar_index + 20, pendTP2, color=color.green, style=line.style_dotted)
+                riskLabel := label.new(bar_index + 20, pendTP1, "ورود " + str.tostring(pendEntry, format.mintick) + " | حد ضرر " + str.tostring(pendSL, format.mintick) + " | " + pendSrc, style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+
+// اگر ستاپ در انتظار باطل شد (قیمت از حد ضرر گذشت) و معامله‌ای باز نیست، ستاپ ریست شود؛
+// خطوط فقط وقتی وجود دارند پاک می‌شوند (اگر نمایش ریسک خاموش باشد، خطی نیست).
+bool pendInvalid = not tradeActive and pendActive and barstate.isconfirmed and ((pendDir == 1 and close < pendSL) or (pendDir == -1 and close > pendSL))
+if pendInvalid
+    if not na(slLine)
+        line.delete(slLine)
+        line.delete(tp1Line)
+        line.delete(tp2Line)
+        label.delete(riskLabel)
+        slLine := na
+        tp1Line := na
+        tp2Line := na
+        riskLabel := na
+    pendActive := false
+    pendId := na
+    pendSrc := ""
+
+// تمدید خطوط
+if not na(slLine)
+    line.set_x2(slLine, bar_index + 20)
+    line.set_x2(tp1Line, bar_index + 20)
+    line.set_x2(tp2Line, bar_index + 20)
+    label.set_x(riskLabel, bar_index + 20)
+// خاموش‌کردن نمایش ریسک فقط خطوط را پاک می‌کند؛ ستاپ و بک‌تست سر جایشان می‌مانند.
+if (not showRisk or not showL3) and not na(slLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    label.delete(riskLabel)
+    slLine := na
+    tp1Line := na
+    tp2Line := na
+    riskLabel := na
+
+// ───────────────────────── کنترل‌های ریسک — دروازه ورود ─────────────────────────
+// همه این کنترل‌ها پیش‌فرض خاموش‌اند (۰ یا خاموش)؛ پس رفتار پیش‌فرض مثل ۵٫۱ می‌ماند.
+// آرایه‌های entryRisks و entrySrcs ریسک دلاری و منبع هر ورود را به ترتیب ذخیره می‌کنند؛
+// چون pyramiding=0 است و ورود فقط وقتی پوزیشنی باز نیست انجام می‌شود، ترتیب ورودها
+// با ترتیب معاملات بسته‌شده در strategy.closedtrades یکی است (برای آمار R و OB/۱۲۳).
+var float[] entryRisks = array.new_float()
+var string[] entrySrcs = array.new_string()
+var float dayStartEq = na
+var int tradesToday = 0
+var int consecLosses = 0
+var int lastClosedN = 0
+var int lastSLBar = na
+if na(dayStartEq) or ta.change(time("D")) != 0
+    dayStartEq := strategy.equity
+    tradesToday := 0
+// ردیابی معاملات بسته‌شده: وقتی تعدادشان بیشتر شد، نتیجه آخرین معامله خوانده می‌شود.
+int closedN = strategy.closedtrades
+if closedN > lastClosedN
+    float lastP = strategy.closedtrades.profit(closedN - 1)
+    string lastXc = strategy.closedtrades.exit_comment(closedN - 1)
+    if lastP < 0
+        consecLosses += 1
+    else
+        consecLosses := 0
+    if not na(lastXc) and lastXc == "SL"
+        lastSLBar := bar_index
+    lastClosedN := closedN
+float dayLoss = na(dayStartEq) ? 0.0 : dayStartEq - strategy.equity
+bool coolOk = cooldownAfterSL <= 0 or na(lastSLBar) or bar_index - lastSLBar > cooldownAfterSL
+bool canTrade = (maxDailyLoss <= 0 or dayLoss < maxDailyLoss) and (maxConsecLosses <= 0 or consecLosses < maxConsecLosses) and (maxTradesPerDay <= 0 or tradesToday < maxTradesPerDay) and coolOk and (minATR <= 0 or (atrOk and atr >= minATR)) and (not tradeOnlyInSession or inLondonRaw or inNyRaw)
+
+// ───────────────────────── ورود و خروج بک‌تست — از ستاپ در انتظار ─────────────────────────
+// ورود فقط وقتی انجام می‌شود که همین کندل ستاپ جدیدی ذخیره شده باشد (setupStoredNow)،
+// داخل بازه بک‌تست باشیم، پوزیشنی باز نباشد و دروازه کنترل ریسک (canTrade) باز باشد.
+// سطوح معامله از ستاپ در انتظار «قفل» می‌شوند (trade*) و ستاپ جدید دیگر آن‌ها را عوض نمی‌کند.
+if useBacktest and inRange and strategy.position_size == 0 and barstate.isconfirmed and setupStoredNow and canTrade
+    float riskAmt = math.abs(pendEntry - pendSL)
+    if riskAmt > 0 and pendEntry > 0
+        // حجم: ریسک دلاری ÷ (فاصله حد ضرر × ارزش یک واحد قیمت) — بر اساس قرارداد نماد.
+        // syminfo.pointvalue ارزش دلاری یک واحد تغییر قیمت برای یک واحد حجم است؛ برای
+        // OANDA:XAUUSD برابر ۱ است (۱ اونس، ۱ دلار حرکت = ۱ دلار)، برای قرارداد ۱۰۰ اونسی
+        // ۱۰۰ است. اگر فید مقدار معتبر ندهد، با ۱٫۰ ادامه می‌دهیم و در لاگ نمی‌نویسیم.
+        float pv = na(syminfo.pointvalue) or syminfo.pointvalue <= 0 ? 1.0 : syminfo.pointvalue
+        float riskMoney = strategy.equity * riskPct / 100.0
+        float qtyRaw = riskMoney / (riskAmt * pv)
+        // سقف‌ها: حداکثر حجم، حداکثر ارزش اسمی، حداکثر مصرف مارجین.
+        float qtyCap = math.min(maxQty, maxNotional / (pendEntry * pv))
+        float marginPerUnit = pendEntry * pv / leverage
+        float qtyByMargin = marginPerUnit > 0 ? strategy.equity * maxMarginUsePct / 100.0 / marginPerUnit : qtyRaw
+        float qty = math.min(qtyRaw, qtyCap, qtyByMargin)
+        // گرد کردن به پایین‌ترین مضرب گام حجم.
+        qty := math.floor(qty / qtyStep) * qtyStep
+        if qty >= minQty
+            // قفل‌کردن سطوح معامله — از همین لحظه خطوط روی چارت هم سطوح معامله را نشان می‌دهند.
+            tradeActive := true
+            tradeDir := pendDir
+            tradeEntry := pendEntry
+            tradeSL := pendSL
+            tradeTP1 := pendTP1
+            tradeTP2 := pendTP2
+            tradeId := pendId
+            tradeSrc := pendSrc
+            tradeTP1Done := false
+            tradeEntryBar := bar_index
+            tradesToday += 1
+            // ذخیره ریسک دلاری واقعی و منبع ستاپ برای آمار بک‌تست.
+            array.push(entryRisks, riskAmt * qty * pv)
+            array.push(entrySrcs, pendSrc)
+            if not na(slLine)
+                line.delete(slLine)
+                line.delete(tp1Line)
+                line.delete(tp2Line)
+                label.delete(riskLabel)
+            if showRisk and showL3
+                slLine := line.new(bar_index, tradeSL, bar_index + 20, tradeSL, color=color.red, style=line.style_dashed)
+                tp1Line := line.new(bar_index, tradeTP1, bar_index + 20, tradeTP1, color=color.green, style=line.style_dashed)
+                tp2Line := line.new(bar_index, tradeTP2, bar_index + 20, tradeTP2, color=color.green, style=line.style_dotted)
+                riskLabel := label.new(bar_index + 20, tradeTP1, "ورود " + str.tostring(tradeEntry, format.mintick) + " | حد ضرر " + str.tostring(tradeSL, format.mintick) + " | " + tradeSrc + " | معامله باز", style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+            if pendDir == 1

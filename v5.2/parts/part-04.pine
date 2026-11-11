@@ -1,0 +1,150 @@
+    if showFVG and showL2
+        b := box.new(bar_index - 2, top, bar_index + fvgExtend, bot, bgcolor=color.new(color.fuchsia, 86), border_color=color.new(color.fuchsia, 0))
+    FVGZone nz = FVGZone.new(b, top, bot, -1, fvgNextId, 0.0, false, false, false, bar_index - 2)
+    fvgNextId += 1
+    array.push(fvgZones, nz)
+    fvgBearEvt := true
+    while array.size(fvgZones) > fvgMaxTotal
+        FVGZone old = array.shift(fvgZones)
+        if not na(old.b)
+            box.delete(old.b)
+
+// انقضای FVG بر اساس سن — جدا از حلقه به‌روزرسانی.
+if barstate.isconfirmed and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        if bar_index - z.bar > fvgMaxAge
+            if not na(z.b)
+                box.delete(z.b)
+            array.remove(fvgZones, i)
+
+// به‌روزرسانی FVGها — فقط روی کندل تأییدشده (مثل بک‌تست ۴٫۴).
+if barstate.isconfirmed and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        if not na(z.b)
+            box.set_right(z.b, bar_index + fvgExtend)
+        float gapSize = z.top - z.bottom
+        if z.dir == 1
+            float entered = math.max(0.0, z.top - low)
+            z.fillPct := gapSize > 0 ? math.min(entered / gapSize, 1.0) : 0.0
+            if low < z.top and close > z.bottom
+                z.mitigated := true
+            bool fullFill = low <= z.bottom
+            bool invalidNow = close < z.bottom
+            if fullFill or invalidNow
+                z.invalid := true
+                if not na(z.b)
+                    box.delete(z.b)
+                array.remove(fvgZones, i)
+        else
+            float entered = math.max(0.0, high - z.bottom)
+            z.fillPct := gapSize > 0 ? math.min(entered / gapSize, 1.0) : 0.0
+            if high > z.bottom and close < z.top
+                z.mitigated := true
+            bool fullFill = high >= z.top
+            bool invalidNow = close > z.top
+            if fullFill or invalidNow
+                z.invalid := true
+                if not na(z.b)
+                    box.delete(z.b)
+                array.remove(fvgZones, i)
+        // نمایش درصد پرشدگی: یک بار، وقتی پرشدگی به ۵۰٪ رسید
+        if showFVGFil and showL2 and not z.invalid and z.fillPct >= 0.5 and not z.fillShown
+            z.fillShown := true
+            label lb = label.new(bar_index, z.dir == 1 ? z.top : z.bottom, (z.dir == 1 ? "FVG+ " : "FVG- ") + str.tostring(math.round(z.fillPct * 100)) + "٪", xloc=xloc.bar_index, style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+            array.push(evtLabels, lb)
+            if array.size(evtLabels) > maxLabels
+                label.delete(array.shift(evtLabels))
+
+// اگر نمایش FVG خاموش شد، فقط باکس‌ها پاک شوند — گپ‌ها برای امتیاز OB می‌مانند.
+if (not showFVG or not showL2) and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        if not na(z.b)
+            box.delete(z.b)
+            z.b := na
+
+// ───────────────────────── الگوی ۱-۲-۳ — State Machine ─────────────────────────
+// حالت‌ها: ۰=انتظار نقطه ۱، ۱=انتظار نقطه ۲، ۲=انتظار نقطه ۳، ۳=انتظار تأیید،
+// ۴=تأییدشده (یک کندل)، ۵=باطل‌شده (یک کندل و بعد ریست)
+// نکته مهم: پیوت‌ها (ta.pivothigh/low) فقط fractalLen کندل «بعد» از سوئینگ تأیید می‌شوند؛
+// پس نقطه‌ها و سیگنال همیشه با تأخیر ثبت می‌شوند، نه روی کندل سوئینگ. سیگنال ۱-۲-۳
+// در لحظه تأیید (شکست نقطه ۲ با بسته‌شدن کندل) صادر می‌شود، نه عقب‌تر — Repaint ندارد.
+var float bP1 = na
+var float bP2 = na
+var float bP3 = na
+var int bStage = 0
+var int bP1Bar = na
+var float sP1 = na
+var float sP2 = na
+var float sP3 = na
+var int sStage = 0
+var int sP1Bar = na
+bool bull123Evt = false
+bool bear123Evt = false
+
+// صعودی: نقطه ۱ = سوئینگ Low، نقطه ۲ = سوئینگ High، نقطه ۳ = Higher Low، تأیید = شکست نقطه ۲
+if show123 and barstate.isconfirmed
+    // حداکثر عمر الگو: اگر از نقطه ۱ تا تأیید بیش از max123Age کندل بگذرد، الگو باطل می‌شود.
+    if bStage != 0 and not na(bP1Bar) and bar_index - bP1Bar > max123Age
+        bStage := 5
+    if bStage == 0
+        if not na(pl)
+            bP1 := pl
+            bP1Bar := bar_index
+            bStage := 1
+    else if bStage == 1
+        if not na(ph) and ph > bP1
+            bP2 := ph
+            bStage := 2
+        else if not na(pl) and pl < bP1
+            bP1 := pl
+            bP1Bar := bar_index
+    else if bStage == 2
+        if not na(pl) and pl > bP1 and pl < bP2
+            bP3 := pl
+            bStage := 3
+        else if not na(ph) and ph > bP2
+            bP2 := ph
+        else if not na(pl) and pl <= bP1
+            // کف جدید پایین‌تر از نقطه ۱: نقطه ۱ شکسته شد، الگو باطل است.
+            bStage := 5
+        else if close < bP1
+            bStage := 5
+    else if bStage == 3
+        if close > bP2
+            bull123Evt := true
+            bStage := 4
+        else if not na(pl) and pl < bP1
+            // پیوت جدید پایین‌تر از نقطه ۱: نقطه ۱ شکسته شد، الگو باطل است.
+            bStage := 5
+        else if close < bP1
+            bStage := 5
+    else if bStage == 4 or bStage == 5
+        bStage := 0
+        bP1 := na
+        bP2 := na
+        bP3 := na
+        bP1Bar := na
+
+// نزولی: معکوس کامل
+if show123 and barstate.isconfirmed
+    if sStage != 0 and not na(sP1Bar) and bar_index - sP1Bar > max123Age
+        sStage := 5
+    if sStage == 0
+        if not na(ph)
+            sP1 := ph
+            sP1Bar := bar_index
+            sStage := 1
+    else if sStage == 1
+        if not na(pl) and pl < sP1
+            sP2 := pl
+            sStage := 2
+        else if not na(ph) and ph > sP1
+            sP1 := ph
+            sP1Bar := bar_index
+    else if sStage == 2
+        if not na(ph) and ph < sP1 and ph > sP2
+            sP3 := ph
+            sStage := 3

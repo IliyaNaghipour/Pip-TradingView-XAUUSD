@@ -1,0 +1,150 @@
+            pendConfBos := false
+            pendConfRej := false
+            pendFvgOverlap := false
+            pendBlockReason := ""
+
+// حداکثر مدت نگهداری معامله (زمان‌محور، §۴): معامله باز که بیش از effMaxHoldBars کندل
+// باز مانده باشد، با قیمت بازار بسته می‌شود و در آمار «بسته‌شدن دیگر» شمرده می‌شود.
+if useBacktest and tradeActive and effMaxHoldBars > 0 and not na(tradeEntryBar) and barstate.isconfirmed and strategy.position_size != 0 and bar_index - tradeEntryBar >= effMaxHoldBars
+    strategy.close(tradeDir == 1 ? "Long" : "Short", comment="MAXHOLD #" + f_pad6(tradeId))
+
+// ریسک پرشده (L-12): در اولین کندل تأییدشده بعد از ورود، قیمت واقعی پرشدن از
+// strategy.opentrades.entry_price(0) خوانده می‌شود و ریسک پرشده جایگزین ریسک
+// برنامه‌ریزی‌شده می‌شود. اگر معامله همان کندل بسته شده باشد و opentrades خالی
+// باشد، ریسک برنامه‌ریزی‌شده می‌ماند و معامله در شمارنده «ریسک تخمینی» می‌رود.
+if useBacktest and tradeActive and not fillRiskDone and barstate.isconfirmed and strategy.opentrades > 0
+    float fillPrice = strategy.opentrades.entry_price(0)
+    if not na(fillPrice) and not na(tradeQty) and not na(tradePv) and tradeQty > 0 and not na(tradeSL)
+        float fr = math.abs(fillPrice - tradeSL) * tradeQty * tradePv
+        if fr > 0
+            int idx = array.indexof(idList, tradeId)
+            if idx >= 0
+                array.set(riskById, idx, fr)
+        fillRiskDone := true
+
+// ───────────────────────── شمارش زنده TP1 ─────────────────────────
+// خروج جزئی TP1 هیچ معامله بسته‌شده‌ای نمی‌سازد، پس در strategy.closedtrades دیده نمی‌شود.
+// تنها نشانه‌اش نصف‌شدن حجم پوزیشن باز است: وقتی حجم باز از کندل قبل کمتر شد ولی صفر
+// نشد، یعنی TP1 خورده است.
+var float prevPosSize = 0.0
+// قدر مطلق: حجم فروش منفی است؛ بدون آن TP1 فروش‌ها هیچ‌وقت شمرده نمی‌شد.
+// کل بلوک (تشخیص + به‌روزرسانی حجم قبلی) فقط روی کندل تأییدشده اجرا می‌شود تا
+// پرشدن TP1 وسط کندل از قلم نیفتد.
+if barstate.isconfirmed
+    if prevPosSize != 0 and strategy.position_size != 0 and math.abs(strategy.position_size) < math.abs(prevPosSize)
+        // هر شناسه حداکثر یک بار شمرده می‌شود (§۷٫۱ — سه مسیر TP1).
+        if tradeActive and not na(tradeId) and array.indexof(tp1Ids, tradeId) < 0
+            array.push(tp1Ids, tradeId)
+        if not na(riskLabel)
+            label.set_text(riskLabel, "ورود " + str.tostring(tradeEntry, format.mintick) + " | حد ضرر " + str.tostring(tradeSL, format.mintick) + " | " + tradeSrc + " | TP1 ✓")
+    prevPosSize := strategy.position_size
+
+// ── Break-Even بعد از TP1 + Trailing Stop (§۵٫۲) ──
+// وقتی TP1 پر شد، خروج TP2 با حد ضرر جدید دوباره صادر می‌شود:
+//  - BE (useBE، پیش‌فرض روشن): stop = نقطه ورود ± (اسپرد تخمینی + ۰٫۰۵ ATR).
+//  - Trailing (useTrail، پیش‌فرض خاموش): بعد از trailActivateR سود شناور فعال
+//    می‌شود؛ stop = بالاترین/پایین‌ترین close از زمان ورود ∓ trailDistATR × ATR
+//    و فقط به سمت سود حرکت می‌کند (ratchet). اگر هر دو روشن باشند، تریل بعد از
+//    فعال‌شدن جای BE را می‌گیرد (دورتر از ورود است).
+// خروج فقط وقتی دوباره صادر می‌شود که stop مؤثر عوض شده باشد (curExitStop).
+var float trailPeak = na
+var float trailStopLvl = na
+var float curExitStop = na
+if useBacktest and tradeActive and barstate.isconfirmed and strategy.position_size != 0 and not na(tradeEntry) and not na(tradeSL)
+    bool tp1DoneNow = not na(tradeId) and array.indexof(tp1Ids, tradeId) >= 0
+    // سقف/کف قیمتی از زمان ورود (برای تریل).
+    if tradeDir == 1
+        trailPeak := na(trailPeak) ? close : math.max(trailPeak, close)
+    else if tradeDir == -1
+        trailPeak := na(trailPeak) ? close : math.min(trailPeak, close)
+    float riskDist = math.abs(tradeEntry - tradeSL)
+    float floatR = riskDist > 0 ? (tradeDir == 1 ? (close - tradeEntry) / riskDist : (tradeEntry - close) / riskDist) : 0.0
+    // حد ضرر مؤثر: تریل فعال > BE بعد از TP1 > حد ضرر اولیه.
+    float effStop = tradeSL
+    string effStopKind = "SL"
+    if tp1DoneNow and useBE
+        float beStop = tradeDir == 1 ? tradeEntry + estSpreadTicks * syminfo.mintick + 0.05 * atr : tradeEntry - estSpreadTicks * syminfo.mintick - 0.05 * atr
+        effStop := beStop
+        effStopKind := "BE"
+    if useTrail and floatR >= trailActivateR and not na(trailPeak)
+        float candTrail = tradeDir == 1 ? trailPeak - trailDistATR * atr : trailPeak + trailDistATR * atr
+        if na(trailStopLvl) or (tradeDir == 1 and candTrail > trailStopLvl) or (tradeDir == -1 and candTrail < trailStopLvl)
+            trailStopLvl := candTrail
+        if not na(trailStopLvl)
+            effStop := trailStopLvl
+            effStopKind := "TRAIL"
+    if na(curExitStop) or effStop != curExitStop
+        curExitStop := effStop
+        string exitId = tradeDir == 1 ? "Long" : "Short"
+        string sq = "#" + f_pad6(tradeId)
+        if effStopKind == "BE"
+            strategy.exit("TP2", exitId, qty_percent=100, limit=tradeTP2, stop=effStop, comment_profit="TP2 " + sq, comment_loss="BE " + sq)
+        else if effStopKind == "TRAIL"
+            strategy.exit("TP2", exitId, qty_percent=100, limit=tradeTP2, stop=effStop, comment_profit="TP2 " + sq, comment_loss="TRAIL " + sq)
+        else
+            strategy.exit("TP2", exitId, qty_percent=100, limit=tradeTP2, stop=effStop, comment_profit="TP2 " + sq, comment_loss="SL " + sq)
+
+// بسته‌شدن معامله: وقتی پوزیشن واقعاً صفر شد، حالت معامله ریست می‌شود تا ستاپ‌های
+// جدید دوباره بتوانند وارد شوند؛ اگر ستاپ در انتظاری هست، خطوط آن نشان داده می‌شود.
+// گارد enteredThisBar جلوی ریست اشتباه در همان کندل ورود را می‌گیرد (در کندل ورود
+// هنوز پوزیشنی باز نشده و position_size صفر است).
+bool tradeJustClosed = tradeActive and strategy.position_size == 0 and barstate.isconfirmed and not enteredThisBar
+if tradeJustClosed
+    // معامله‌ای که ریسک پرشده‌اش خوانده نشده، در شمارنده «ریسک تخمینی» می‌رود.
+    if not fillRiskDone and not na(tradeId)
+        array.push(estRiskIds, tradeId)
+    tradeActive := false
+    tradeDir := 0
+    tradeEntry := na
+    tradeSL := na
+    tradeTP1 := na
+    tradeTP2 := na
+    tradeId := na
+    tradeSrc := ""
+    tradeQty := na
+    tradePv := na
+    fillRiskDone := false
+    tradeEntryBar := na
+    trailPeak := na
+    trailStopLvl := na
+    curExitStop := na
+    if not na(slLine)
+        line.delete(slLine)
+        line.delete(tp1Line)
+        line.delete(tp2Line)
+        label.delete(riskLabel)
+        slLine := na
+        tp1Line := na
+        tp2Line := na
+        riskLabel := na
+    if pendActive and showRisk and showL3
+        slLine := line.new(bar_index, pendSL, bar_index + 20, pendSL, color=color.red, style=line.style_dashed)
+        tp1Line := line.new(bar_index, pendTP1, bar_index + 20, pendTP1, color=color.green, style=line.style_dashed)
+        tp2Line := line.new(bar_index, pendTP2, bar_index + 20, pendTP2, color=color.green, style=line.style_dotted)
+        riskLabel := label.new(bar_index + 20, pendTP1, "ورود " + str.tostring(pendEntry, format.mintick) + " | حد ضرر " + str.tostring(pendSL, format.mintick) + " | " + pendSrc, style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+
+// ───────────────────────── آمار بک‌تست — محاسبه در آخرین کندل ─────────────────────────
+// جدول آمار پایین-راست چارت است تا با داشبورد (بالا-راست) هم‌پوشانی نداشته باشد.
+// «معامله تکمیل‌شده» = یک پوزیشن که کامل بسته شده است (یک رکورد در closedtrades).
+// «خروج» = هر بار که بخشی از پوزیشن بسته می‌شود؛ TP1 یک خروج جزئی است و معامله
+// مستقلی شمرده نمی‌شود. جمع خروج‌ها = TP1 + TP2 + SL + BE + TRAIL.
+// «بسته‌شدن دیگر» = معاملاتی که شبیه‌ساز در پایان بازه یا با MAXHOLD بسته است.
+// حداکثر افت بر اساس «بسته‌شدن کندل» (equity در پایان کندل) حساب می‌شود، نه افت
+// داخل کندل؛ افت داخل کندل بدون calc_on_every_tick در دسترس نیست.
+// جدول ماهانه جدا (پایین-وسط) ۶ ماه اخیر را نشان می‌دهد.
+// L-5: جدول فقط وقتی ساخته می‌شود که ورودی نمایش آن روشن باشد.
+var table stats = showStats ? table.new(position.bottom_right, 2, 34, border_width=1) : na
+var table monthly = showMonthly ? table.new(position.bottom_center, 3, 7, border_width=1) : na
+var float peakEq = na
+var float maxDD = 0.0
+var float maxDDPct = 0.0
+float eq = strategy.equity
+if na(peakEq)
+    peakEq := eq
+if eq > peakEq
+    peakEq := eq
+if peakEq - eq > maxDD
+    maxDD := peakEq - eq
+    maxDDPct := peakEq > 0 ? (peakEq - eq) / peakEq * 100.0 : 0.0
+
+if barstate.islast

@@ -1,0 +1,150 @@
+    float longWR = longN > 0 ? longWins / longN * 100.0 : 0.0
+    float shortWR = shortN > 0 ? shortWins / shortN * 100.0 : 0.0
+    float pf = grossLoss > 0 ? grossWin / grossLoss : na
+    float avgProfit = n > 0 ? totProfit / n : 0.0
+    float avgR = n > 0 ? totR / n : 0.0
+    float obWR = obN > 0 ? obWins / obN * 100.0 : 0.0
+    float xWR = xN > 0 ? xWins / xN * 100.0 : 0.0
+    table.cell(stats, 0, 0, "پیپ ۵٫۲ — بک‌تست طلا", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(stats, 1, 0, "دمو — نه تضمین سود", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(stats, 0, 1, "معاملات تکمیل‌شده", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 1, str.tostring(n), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 2, "تعداد خروج‌ها (TP1+TP2+SL)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 2, str.tostring(totalExits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 3, "خرید / فروش", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 3, str.tostring(longN) + " / " + str.tostring(shortN), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 4, "Win Rate", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 4, str.tostring(winRate, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 5, "Win Rate خرید", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 5, str.tostring(longWR, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 6, "Win Rate فروش", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 6, str.tostring(shortWR, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 7, "Profit Factor", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 7, na(pf) ? "—" : str.tostring(pf, "#.##"), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 8, "سود خالص", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 8, str.tostring(totProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 9, "سود ناخالص", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 9, str.tostring(grossWin, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 10, "ضرر ناخالص", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 10, str.tostring(grossLoss, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 11, "حداکثر افت (بسته‌شدن کندل)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 11, str.tostring(maxDD, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 12, "حداکثر افت (٪)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 12, str.tostring(maxDDPct, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 13, "میانگین R", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 13, str.tostring(avgR, "#.##") + "R", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 14, "TP1 (نیمه‌خروج)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 14, str.tostring(tp1HitsLive), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 15, "TP2", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 15, str.tostring(tp2Hits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 16, "SL", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 16, str.tostring(slHits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 17, "بسته‌شدن دیگر", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 17, str.tostring(otherCloses), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 18, "میانگین سود هر معامله", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 18, str.tostring(avgProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 19, "عملکرد OB", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 19, str.tostring(obN) + " معامله، " + str.tostring(obWR, "#.##") + "٪، " + str.tostring(obProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 20, "عملکرد ۱-۲-۳", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 20, str.tostring(xN) + " معامله، " + str.tostring(xWR, "#.##") + "٪، " + str.tostring(xProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 21, "توجه", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 21, "افت بر اساس بسته‌شدن کندل است", text_color=color.white, bgcolor=color.new(color.gray, 0))
+
+// ───────────────────────── داشبورد فارسی ─────────────────────────
+var table dash = table.new(position.top_right, 2, 8, border_width=1)
+var string lastSignal = "—"
+if obBullTouchEvt
+    lastSignal := "لمس اردر بلاک صعودی"
+if obBearTouchEvt
+    lastSignal := "لمس اردر بلاک نزولی"
+if bull123Evt
+    lastSignal := "الگوی ۱-۲-۳ صعودی"
+if bear123Evt
+    lastSignal := "الگوی ۱-۲-۳ نزولی"
+if bullFlagEvt
+    lastSignal := "پرچم صعودی (آزمایشی)"
+if bearFlagEvt
+    lastSignal := "پرچم نزولی (آزمایشی)"
+if bosUpEvt
+    lastSignal := "شکست ساختار صعودی"
+if bosDnEvt
+    lastSignal := "شکست ساختار نزولی"
+if chochUpEvt
+    lastSignal := "تغییر روند صعودی"
+if chochDnEvt
+    lastSignal := "تغییر روند نزولی"
+if sweepUpEvt or sweepDnEvt
+    lastSignal := "جاروی نقدینگی"
+
+string htfTxt = not htfValid ? (htfFallback ? "نامعتبر — روند چارت" : "نامعتبر (بلوکه)") : htfTrendSafe == 1 ? "صعودی" : htfTrendSafe == -1 ? "نزولی" : "خنثی"
+string ltfTxt = trendState == 1 ? "صعودی" : trendState == -1 ? "نزولی" : "خنثی"
+string structTxt = lastStruct == "—" ? (structState == 1 ? "صعودی" : structState == -1 ? "نزولی" : "خنثی") : lastStruct
+string scoreTxt = na(bestObScore) ? "—" : str.tostring(math.round(bestObScore)) + " / ۱۰۰"
+
+if showDash and showL1 and barstate.islast
+    dashPosVal = dashPos == "Top Left" ? position.top_left : dashPos == "Bottom Right" ? position.bottom_right : dashPos == "Bottom Left" ? position.bottom_left : position.top_right
+    table.set_position(dash, dashPosVal)
+    table.cell(dash, 0, 0, "پیپ ۵٫۲ | " + syminfo.ticker, text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(dash, 1, 0, timeframe.period, text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(dash, 0, 1, "روند HTF (" + htfTF + ")", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 1, htfTxt, text_color=color.white, bgcolor=htfTrendSafe == 1 ? color.new(color.green, 0) : htfTrendSafe == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+    table.cell(dash, 0, 2, "روند فعلی", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 2, ltfTxt, text_color=color.white, bgcolor=trendState == 1 ? color.new(color.green, 0) : trendState == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+    table.cell(dash, 0, 3, "ATR(14)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 3, str.tostring(atr, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    if not dashCompact
+        table.cell(dash, 0, 4, "ساختار بازار", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 4, structTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 5, "سشن", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 5, sessName, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 6, "امتیاز بهترین OB", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 6, scoreTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 7, "آخرین رویداد", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 7, lastSignal, text_color=color.white, bgcolor=color.new(color.gray, 0))
+    else
+        table.cell(dash, 0, 4, "آخرین رویداد", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 4, lastSignal, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 5, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 5, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 6, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 6, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 7, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 7, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+
+// ───────────────────────── هشدارها — ۱۴ هشدار تحلیلی + هشدار سفارش ─────────────────────────
+// در ۵٫۱ از alertcondition استفاده شده بود که داخل strategy() هیچ اثری ندارد (هشدار
+// کامپایلر در ۵٫۱). حالا با alert() فراخوانی می‌شود: هر رویداد یک فراخوانی جدا دارد،
+// پس چند رویداد در یک کندل هیچ‌کدام گم نمی‌شوند. همه روی کندل تأییدشده و فقط یک بار
+// در هر کندل (freq_once_per_bar_close) صادر می‌شوند. پیام‌ها پویا هستند: نماد، تایم‌فریم،
+// قیمت و رویداد در متن می‌آید و با Webhook تریدینگ‌ویو سازگار است. برای هشدار تلگرام،
+// در TradingView یک Alert روی همین استراتژی بساز و گزینه «alert() function calls» را
+// انتخاب کن؛ هیچ توکن یا کلیدی داخل کد Pine قرار نمی‌گیرد.
+string alSym = syminfo.ticker + " | " + timeframe.period + " | "
+if alOBBull and obBullTouchEvt
+    alert("پیپ ۵٫۲ | " + alSym + "لمس اردر بلاک صعودی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alOBBear and obBearTouchEvt
+    alert("پیپ ۵٫۲ | " + alSym + "لمس اردر بلاک نزولی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alBOSBull and bosUpEvt
+    alert("پیپ ۵٫۲ | " + alSym + "شکست ساختار صعودی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alBOSBear and bosDnEvt
+    alert("پیپ ۵٫۲ | " + alSym + "شکست ساختار نزولی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alCHBull and chochUpEvt
+    alert("پیپ ۵٫۲ | " + alSym + "تغییر روند صعودی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alCHBear and chochDnEvt
+    alert("پیپ ۵٫۲ | " + alSym + "تغییر روند نزولی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alSwpBull and sweepUpEvt
+    alert("پیپ ۵٫۲ | " + alSym + "جاروی نقدینگی بالای سقف | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alSwpBear and sweepDnEvt
+    alert("پیپ ۵٫۲ | " + alSym + "جاروی نقدینگی زیر کف | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFVGBull and fvgBullEvt
+    alert("پیپ ۵٫۲ | " + alSym + "گپ ارزش منصفانه صعودی ساخته شد | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFVGBear and fvgBearEvt
+    alert("پیپ ۵٫۲ | " + alSym + "گپ ارزش منصفانه نزولی ساخته شد | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if al123Bull and bull123Evt
+    alert("پیپ ۵٫۲ | " + alSym + "الگوی ۱-۲-۳ صعودی نقطه ۲ را شکست | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if al123Bear and bear123Evt
+    alert("پیپ ۵٫۲ | " + alSym + "الگوی ۱-۲-۳ نزولی نقطه ۲ را شکست | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFlgBull and bullFlagEvt
+    alert("پیپ ۵٫۲ | " + alSym + "پرچم صعودی شکست (آزمایشی) | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFlgBear and bearFlagEvt
+    alert("پیپ ۵٫۲ | " + alSym + "پرچم نزولی شکست (آزمایشی) | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)

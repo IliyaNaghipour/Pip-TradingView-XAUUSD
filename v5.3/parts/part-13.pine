@@ -1,0 +1,150 @@
+    // در Pine v6 خودِ strategy.closedtrades تعداد معاملات بسته‌شده است (عدد صحیح).
+    int n = strategy.closedtrades
+    int wins = 0
+    int longN = 0
+    int shortN = 0
+    int longWins = 0
+    int shortWins = 0
+    int tp1Total = 0
+    int tp1Inferred = 0
+    int tp2Hits = 0
+    int slHits = 0
+    int beHits = 0
+    int trailHits = 0
+    int obN = 0
+    int obWins = 0
+    int xN = 0
+    int xWins = 0
+    int unmatchedN = 0
+    int matchedN = 0
+    int maxConsecLoss = 0
+    int curConsecLoss = 0
+    float totProfit = 0.0
+    float grossWin = 0.0
+    float grossLoss = 0.0
+    float totR = 0.0
+    float obProfit = 0.0
+    float xProfit = 0.0
+    float totComm = 0.0
+    float totSlip = 0.0
+    float cumReal = 0.0
+    float peakReal = strategy.initial_capital
+    float maxDDReal = 0.0
+    float maxDDRealPct = 0.0
+    int[] sN = array.new_int(4, 0)
+    float[] sP = array.new_float(4, 0.0)
+    int curMonthCode = year * 12 + month
+    int[] mN = array.new_int(12, 0)
+    float[] mP = array.new_float(12, 0.0)
+    if n > 0
+        for i = 0 to n - 1
+            float p = strategy.closedtrades.profit(i)
+            totProfit += p
+            if p > 0
+                wins += 1
+                grossWin += p
+                curConsecLoss := 0
+            else
+                grossLoss += -p
+                curConsecLoss += 1
+                if curConsecLoss > maxConsecLoss
+                    maxConsecLoss := curConsecLoss
+            // حداکثر افت تحقق‌یافته (معاملات بسته): منحنی اکوییتی = سرمایه اولیه
+            // + سود انباشته معاملات بسته؛ باید با Strategy Tester تطبیق بخورد.
+            cumReal += p
+            float realEq = strategy.initial_capital + cumReal
+            if realEq > peakReal
+                peakReal := realEq
+            if peakReal - realEq > maxDDReal
+                maxDDReal := peakReal - realEq
+                maxDDRealPct := peakReal > 0 ? (peakReal - realEq) / peakReal * 100.0 : 0.0
+            // جهت + شناسه + منبع از کامنت ورود ("Long #000123 OB+").
+            string ec = strategy.closedtrades.entry_comment(i)
+            bool isLong = not na(ec) and str.startswith(ec, "Long")
+            if isLong
+                longN += 1
+                if p > 0
+                    longWins += 1
+            else
+                shortN += 1
+                if p > 0
+                    shortWins += 1
+            int tid = na
+            string tsrc = ""
+            if not na(ec)
+                int hp = str.pos(ec, "#")
+                if hp >= 0 and str.length(ec) > hp + 7
+                    float tidF = str.tonumber(str.substring(ec, hp + 1, hp + 7))
+                    if not na(tidF)
+                        tid := int(tidF)
+                    if str.length(ec) > hp + 8
+                        tsrc := str.substring(ec, hp + 8)
+            int k = na(tid) ? -1 : array.indexof(idList, tid)
+            bool matched = k >= 0
+            if not matched
+                unmatchedN += 1
+            else
+                matchedN += 1
+                // R چندبرابر: سود تقسیم بر ریسک پرشده همان معامله (آرایه شناسه‌دار).
+                float r0 = array.get(riskById, k)
+                if r0 > 0
+                    totR += p / r0
+                // منبع ستاپ: OB یا ۱-۲-۳ (از کامنت تجزیه‌شده، با شناسه یکتا).
+                if str.startswith(tsrc, "OB")
+                    obN += 1
+                    obProfit += p
+                    if p > 0
+                        obWins += 1
+                else if tsrc == "123"
+                    xN += 1
+                    xProfit += p
+                    if p > 0
+                        xWins += 1
+                // تفکیک سشن (کد ذخیره‌شده در لحظه ورود: ۰=آسیا، ۱=لندن، ۲=نیویورک، ۳=هم‌پوشانی/سایر).
+                int sc = array.get(sessById, k)
+                if sc >= 0 and sc <= 3
+                    array.set(sN, sc, array.get(sN, sc) + 1)
+                    array.set(sP, sc, array.get(sP, sc) + p)
+                // ماهانه: سطل ۱۲ ماه اخیر (۰ = ماه جاری).
+                int mc = array.get(monthById, k)
+                int mi = curMonthCode - mc
+                if mi >= 0 and mi < 12
+                    array.set(mN, mi, array.get(mN, mi) + 1)
+                    array.set(mP, mi, array.get(mP, mi) + p)
+                // هزینه‌ها: کمیسیون ۰٫۰۲٪ از ارزش اسمی ورود+خروج؛ لغزش ۲ تیک در
+                // ورود و خروج (۲ تیک × ۲ × mintick × pointvalue × حجم).
+                float q = array.get(qtyById, k)
+                float ep = strategy.closedtrades.entry_price(i)
+                float xp = strategy.closedtrades.exit_price(i)
+                if not na(q) and q > 0 and not na(ep) and not na(xp)
+                    float pvq = na(syminfo.pointvalue) or syminfo.pointvalue <= 0 ? 1.0 : syminfo.pointvalue
+                    totComm += 0.0002 * q * (ep + xp)
+                    totSlip += 2.0 * 2.0 * syminfo.mintick * pvq * q
+            // دسته‌بندی خروج نهایی با کامنت خروج: TP2 / SL / BE / TRAIL — نه با مقایسه قیمت.
+            string xc = strategy.closedtrades.exit_comment(i)
+            if not na(xc)
+                if str.startswith(xc, "TP2")
+                    tp2Hits += 1
+                else if str.startswith(xc, "SL")
+                    slHits += 1
+                else if str.startswith(xc, "BE")
+                    beHits += 1
+                else if str.startswith(xc, "TRAIL")
+                    trailHits += 1
+            // تطبیق TP1 — سه مسیر (§۷٫۱)، هر شناسه حداکثر یک بار:
+            //  ۱) زنده: شناسه در tp1Ids است.
+            //  ۲) استنتاجی: خروج نهایی TP2 یا BE است (فقط بعد از حذف ۵۰٪ اول ممکن است).
+            //  ۳) استنتاجی: خروج نهایی SL است و زیان کمتر از ریسک کامل است
+            //     (فقط وقتی ممکن است که ۵۰٪ در TP1 با سود بسته شده باشد).
+            bool tp1Live = not na(tid) and array.indexof(tp1Ids, tid) >= 0
+            bool tp1Inf = false
+            if not tp1Live and not na(xc)
+                if str.startswith(xc, "TP2") or str.startswith(xc, "BE")
+                    tp1Inf := true
+                else if str.startswith(xc, "SL") and matched
+                    float fr0 = array.get(riskById, k)
+                    if fr0 > 0 and p > -0.99 * fr0
+                        tp1Inf := true
+            if tp1Live or tp1Inf
+                tp1Total += 1
+                if tp1Inf

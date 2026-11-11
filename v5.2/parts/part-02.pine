@@ -1,0 +1,150 @@
+
+if barstate.isconfirmed and not na(lastPh) and not swingHiBroken and close > lastPh
+    swingHiBroken := true
+    if structState == -1
+        chochUpEvt := true
+        lastStruct := "CHoCH"
+    else
+        bosUpEvt := true
+        lastStruct := "BOS"
+    structState := 1
+    if showL1
+        label lb = label.new(bar_index, low, chochUpEvt ? "CHoCH" : "BOS", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+
+if barstate.isconfirmed and not na(lastPl) and not swingLoBroken and close < lastPl
+    swingLoBroken := true
+    if structState == 1
+        chochDnEvt := true
+        lastStruct := "CHoCH"
+    else
+        bosDnEvt := true
+        lastStruct := "BOS"
+    structState := -1
+    if showL1
+        label lb = label.new(bar_index, high, chochDnEvt ? "CHoCH" : "BOS", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.maroon, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+
+// ───────────────────────── جاروی نقدینگی ─────────────────────────
+var bool swingHiSwept = false
+var bool swingLoSwept = false
+bool sweepUpEvt = false
+bool sweepDnEvt = false
+if not na(ph)
+    swingHiSwept := false
+if not na(pl)
+    swingLoSwept := false
+
+if barstate.isconfirmed and not na(lastPh) and not swingHiSwept and high > lastPh and close < lastPh
+    swingHiSwept := true
+    sweepUpEvt := true
+    if showL2
+        label lb = label.new(bar_index, high, "SWP", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.purple, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+if barstate.isconfirmed and not na(lastPl) and not swingLoSwept and low < lastPl and close > lastPl
+    swingLoSwept := true
+    sweepDnEvt := true
+    if showL2
+        label lb = label.new(bar_index, low, "SWP", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.purple, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+
+// ───────────────────────── حافظه کوتاه‌مدت رویدادها (برای امتیاز OB) ─────────────────────────
+// BOS/CHoCH و جاروی نقدینگی تا چند کندل قبل از ساخت OB هم برای امتیاز حساب می‌شوند،
+// نه فقط رویداد همان کندل (ورودی‌های structLookback و sweepLookback).
+var int lastStructUpBar = na
+var int lastStructDnBar = na
+var int lastSweepUpBar = na
+var int lastSweepDnBar = na
+if bosUpEvt or chochUpEvt
+    lastStructUpBar := bar_index
+if bosDnEvt or chochDnEvt
+    lastStructDnBar := bar_index
+if sweepUpEvt
+    lastSweepUpBar := bar_index
+if sweepDnEvt
+    lastSweepDnBar := bar_index
+bool structUpRecent = not na(lastStructUpBar) and bar_index - lastStructUpBar <= structLookback
+bool structDnRecent = not na(lastStructDnBar) and bar_index - lastStructDnBar <= structLookback
+bool sweepUpRecent = not na(lastSweepUpBar) and bar_index - lastSweepUpBar <= sweepLookback
+bool sweepDnRecent = not na(lastSweepDnBar) and bar_index - lastSweepDnBar <= sweepLookback
+
+// ───────────────────────── توابع خالص (هیچ متغیر سراسری را تغییر نمی‌دهند) ─────────────────────────
+f_lastOpp(int dir, int n) =>
+    int idx = na
+    for i = 1 to n
+        if na(idx) and dir == 1 and close[i] < open[i]
+            idx := i
+        if na(idx) and dir == -1 and close[i] > open[i]
+            idx := i
+    idx
+
+f_overlap(float cLow, float cHigh, float zBot, float zTop) =>
+    cLow <= zTop and cHigh >= zBot
+
+// ───────────────────────── اردر بلاک — یک موتور برای نمایش و بک‌تست ─────────────────────────
+// آرایه FVG اینجا اعلان می‌شود تا امتیاز OB بتواند هم‌پوشانی با FVG را بسنجد؛
+// ساخت FVGها در بخش بعدی انجام می‌شود.
+var FVGZone[] fvgZones = array.new<FVGZone>()
+var int fvgNextId = 1
+var OBZone[] obZones = array.new<OBZone>()
+var int obNextId = 1
+bool obBullTouchEvt = false
+bool obBearTouchEvt = false
+int touchBullId = na
+float touchBullTop = na
+float touchBullBot = na
+float touchBullScore = na
+int touchBearId = na
+float touchBearTop = na
+float touchBearBot = na
+float touchBearScore = na
+
+bullDisp = atrOk and close > open and (close - open) > atr * obDispATR and close > high[1]
+bearDisp = atrOk and close < open and (open - close) > atr * obDispATR and close < low[1]
+// obOnlyHTF روشن: ساخت OB فقط وقتی HTF دقیقاً هم‌جهت است؛ HTF خنثی هر دو جهت را
+// می‌بندد (در ۵٫۱ خنثی هر دو جهت را باز می‌گذاشت — این یک تغییر مستند است).
+bullAllowed = not obOnlyHTF or htfTrendSafe == 1
+bearAllowed = not obOnlyHTF or htfTrendSafe == -1
+
+// امتیاز OB: HTF هم‌راستا ۲۵ / خنثی ۱۰ / مخالف ۰، قدرت جابه‌جایی تا ۲۰، تأیید ساختار ۱۵،
+// جاروی نقدینگی ۱۰، هم‌پوشانی FVG «هم‌جهت» ۱۵، سشن ۵ — پایه حداکثر ۹۰.
+// تازگی (تا ۱۰) جدا حساب می‌شود و با گذشت زمان کم می‌شود؛ امتیاز نهایی حداکثر ۱۰۰ است.
+// تغییر نسبت به ۵٫۱ (مستند): HTF خنثی قبلاً ۲۵ می‌گرفت، حالا ۱۰ می‌گیرد، چون خنثی
+// هم‌راستایی کامل نیست. امتیاز احتمال موفقیت معامله نیست؛ فقط کیفیت نسبی ناحیه را نشان می‌دهد.
+f_obScore(float disp, int htfPts, bool structOk, bool sweepOk, bool fvgOk, float atrVal, float sessBonus) =>
+    float s = 0.0
+    s := s + htfPts
+    s := s + math.min(disp / atrVal, 3.0) / 3.0 * 20.0
+    s := s + (structOk ? 15.0 : 0.0)
+    s := s + (sweepOk ? 10.0 : 0.0)
+    s := s + (fvgOk ? 15.0 : 0.0)
+    s := s + sessBonus
+    math.min(s, 90.0)
+
+// تازگی: در لحظه ساخت ناحیه ۱۰ است و با رسیدن سن ناحیه به obMaxAge خطی به صفر می‌رسد.
+// سن از کندلِ ناحیه (نه کندل ساخت) حساب می‌شود.
+f_freshScore(int ageBars) =>
+    10.0 * math.max(0.0, 1.0 - ageBars / obMaxAge)
+
+// ساخت ناحیه همیشه انجام می‌شود؛ باکس فقط وقتی ساخته می‌شود که نمایش OB روشن باشد.
+// اگر نمایش خاموش باشد، ناحیه بدون باکس (b = na) نگه داشته می‌شود تا بک‌تست کار کند.
+if bullDisp and bullAllowed and barstate.isconfirmed
+    int bi = f_lastOpp(1, obLookback)
+    if not na(bi)
+        bool dup = false
+        if array.size(obZones) > 0
+            for i = 0 to array.size(obZones) - 1
+                OBZone z = array.get(obZones, i)
+                if z.bar == bar_index - bi
+                    dup := true
+        if not dup
+            float top = high[bi]
+            float bot = low[bi]

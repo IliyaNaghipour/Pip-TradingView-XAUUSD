@@ -1,0 +1,150 @@
+            if retestOk
+                newSetup := true
+                newSetupDir := -1
+                newSetupEntry := close
+                newSetupSL := touchBearTop + atr * effSlBuffer
+                newSetupId := touchBearId
+                newSetupSrc := "OB-"
+                newSetupQual := touchBearScore
+                newSetupTop := touchBearTop
+                newSetupBot := touchBearBot
+                newSetupFvg := f_fvgOverlapZone(touchBearBot, touchBearTop, -1)
+        else
+            lastSetupReject := g123FailShort
+    else if bull123Evt and not na(bP3) and not na(b123Qual) and b123Qual >= min123Score
+        if g1Long and g2Long and g3Long
+            newSetup := true
+            newSetupDir := 1
+            newSetupEntry := close
+            newSetupSL := bP3 - atr * effSlBuffer
+            newSetupId := -1
+            newSetupSrc := "123"
+            newSetupQual := b123Qual
+            newSetupTop := bP2
+            newSetupBot := bP3
+            newSetupFvg := f_fvgOverlapZone(bP3, bP2, 1)
+        else
+            lastSetupReject := g123FailLong
+    else if bear123Evt and not na(sP3) and not na(s123Qual) and s123Qual >= min123Score
+        if g1Short and g2Short and g3Short
+            newSetup := true
+            newSetupDir := -1
+            newSetupEntry := close
+            newSetupSL := sP3 + atr * effSlBuffer
+            newSetupId := -2
+            newSetupSrc := "123"
+            newSetupQual := s123Qual
+            newSetupTop := sP2
+            newSetupBot := sP3
+            newSetupFvg := f_fvgOverlapZone(sP3, sP2, -1)
+        else
+            lastSetupReject := g123FailShort
+
+if newSetup and not na(newSetupSL) and not na(newSetupEntry)
+    float riskAmt = math.abs(newSetupEntry - newSetupSL)
+    if riskAmt > 0
+        float tp1 = newSetupDir == 1 ? newSetupEntry + riskAmt * effTp1RR : newSetupEntry - riskAmt * effTp1RR
+        float tp2 = newSetupDir == 1 ? newSetupEntry + riskAmt * effTp2RR : newSetupEntry - riskAmt * effTp2RR
+        // ستاپ در انتظار همیشه ذخیره می‌شود، حتی وقتی معامله باز است؛
+        // اما خطوط روی چارت فقط وقتی معامله باز نیست با ستاپ جدید عوض می‌شوند.
+        // برچسب انقضای قبلی (اگر باشد) پاک می‌شود.
+        if not na(pendExpiredLbl)
+            label.delete(pendExpiredLbl)
+            pendExpiredLbl := na
+        pendState := 1
+        pendDir := newSetupDir
+        pendEntry := newSetupEntry
+        pendSL := newSetupSL
+        pendTP1 := tp1
+        pendTP2 := tp2
+        pendId := newSetupId
+        pendSrc := newSetupSrc
+        pendQual := newSetupQual
+        pendSetupBar := bar_index
+        pendZoneTop := newSetupTop
+        pendZoneBot := newSetupBot
+        pendConfirmed := false
+        pendConfBos := false
+        pendConfRej := false
+        pendFvgOverlap := newSetupFvg
+        pendBlockReason := "در انتظار تأیید"
+        if not tradeActive
+            if not na(slLine)
+                line.delete(slLine)
+                line.delete(tp1Line)
+                line.delete(tp2Line)
+                label.delete(riskLabel)
+            if showRisk and showL3
+                [slL, t1L, t2L, rL] = f_drawPendLines(pendDir, pendEntry, pendSL, pendTP1, pendTP2, pendSrc, false)
+                slLine := slL
+                tp1Line := t1L
+                tp2Line := t2L
+                riskLabel := rL
+
+// ── ارزیابی گیت‌های G5–G8 در هر کندل تأییدشده تا انقضای ستاپ (بخش ۳٫۱) ──
+// G5 حتی وقتی معامله باز است هم ارزیابی می‌شود و latch می‌شود (§۳٫۴ قانون ۲)،
+// پس وقتی معامله بسته شد، ستاپ می‌تواند مستقیم در حالت ۲ باشد.
+if barstate.isconfirmed and (pendState == 1 or pendState == 2)
+    // انقضا با سن — با هم‌پوشانی FVG معتبر، پنجره ۱٫۵ برابر می‌شود.
+    int ageLimit = pendFvgOverlap ? int(math.round(effMaxSetupAgeBars * 1.5)) : effMaxSetupAgeBars
+    // اعتبار ناحیه: OB باید هنوز در لیست ناحیه‌ها باشد (باطل/منقضی نشده باشد).
+    bool zoneOk = true
+    if str.startswith(pendSrc, "OB")
+        zoneOk := f_zoneAlive(pendId)
+    // عبور قیمت از حد ضرر برنامه‌ریزی‌شده هم ستاپ را باطل می‌کند.
+    bool slCrossed = (pendDir == 1 and close < pendSL) or (pendDir == -1 and close > pendSL)
+    // G5: تأیید برگشت — Micro BOS یا کندل برگشتی (OR)؛ Conservative: هر دو + جارو (AND).
+    bool bosOk = pendDir == 1 ? microBosLong : microBosShort
+    bool rejOk = pendDir == 1 ? microRejLong : microRejShort
+    bool sweepOk = pendDir == 1 ? sweepDnRecent : sweepUpRecent
+    bool confNow = effConf == "AND" ? (bosOk and rejOk and (not confNeedSweep or sweepOk)) : (bosOk or rejOk)
+    if bosOk
+        pendConfBos := true
+    if rejOk
+        pendConfRej := true
+    if confNow
+        pendConfirmed := true
+    // G6: فاصله ورود از ناحیه + حداقل R:R (TP1 ثابت برنامه‌ریزی‌شده در برابر ورود جاری).
+    float riskNow = math.abs(close - pendSL)
+    float distNow = pendDir == 1 ? math.max(0.0, close - pendZoneTop) : math.max(0.0, pendZoneBot - close)
+    float rrNow = riskNow > 0 ? math.abs(pendTP1 - close) / riskNow : 0.0
+    bool g6Ok = distNow <= maxEntryDistATR * atr and riskNow > 0 and rrNow >= minRR
+    // G7: اسپرد تخمینی در برابر فاصله حد ضرر.
+    float spreadUsd = estSpreadTicks * syminfo.mintick
+    bool g7Ok = spreadUsd <= effMaxSpreadFrac * riskNow
+    // دلیل انقضا (اگر باشد) — فقط یکی، به ترتیب اولویت.
+    string expireReason = ""
+    if bar_index - pendSetupBar > ageLimit or not zoneOk or slCrossed
+        expireReason := not zoneOk ? "ناحیه باطل/منقضی شد" : slCrossed ? "قیمت از حد ضرر گذشت" : "پنجره تأیید گذشت"
+    else if not g6Ok
+        expireReason := "فاصله ورود از ناحیه / R:R کمتر از حد"
+    else if not g7Ok
+        expireReason := "اسپرد بیش از حد مجاز"
+    if expireReason != ""
+        // → حالت ۳ (منقضی): خطوط حذف، برچسب موقت یک کندل.
+        if not na(slLine)
+            line.delete(slLine)
+            line.delete(tp1Line)
+            line.delete(tp2Line)
+            label.delete(riskLabel)
+            slLine := na
+            tp1Line := na
+            tp2Line := na
+            riskLabel := na
+        pendBlockReason := expireReason
+        pendState := 3
+        if showRisk and showL3
+            pendExpiredLbl := label.new(bar_index, pendDir == 1 ? low : high, "ستاپ منقضی شد — معامله نمی‌شود", xloc=xloc.bar_index, style=pendDir == 1 ? label.style_label_up : label.style_label_down, color=color.new(color.gray, 0), textcolor=color.white, size=size.tiny)
+    else if pendConfirmed and g8Ok
+        // → حالت ۲ (آماده ورود): خطوط پررنگ.
+        if pendState == 1
+            pendState := 2
+            pendBlockReason := "آماده ورود"
+            if not tradeActive
+                if not na(slLine)
+                    line.delete(slLine)
+                    line.delete(tp1Line)
+                    line.delete(tp2Line)
+                    label.delete(riskLabel)
+                if showRisk and showL3
+                    [slL, t1L, t2L, rL] = f_drawPendLines(pendDir, pendEntry, pendSL, pendTP1, pendTP2, pendSrc, true)

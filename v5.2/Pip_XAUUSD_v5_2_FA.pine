@@ -1,0 +1,1358 @@
+//@version=6
+// پیپ نسخه ۵٫۲ — یکپارچه: اندیکاتور + بک‌تست در یک فایل — فقط TradingView — Pine Script v6
+// نسخه ۵٫۲: بازبینی حرفه‌ای کامل ۵٫۱ — معماری خروج TP1/TP2/SL بازسازی شد، حجم بر اساس
+// مشخصات قرارداد نماد (pointvalue) محاسبه می‌شود، ستاپ در انتظار از معامله باز جدا شد،
+// پرچم، ۱-۲-۳، فیلتر HTF، امتیازدهی OB و چرخه عمر OB/FVG اصلاح شدند، ۱۴ هشدار alertcondition
+// با فراخوانی alert() جایگزین شد، آمار بک‌تست بازسازی شد و کنترل‌های ریسک اضافه شد
+// (گزارش کامل: PIP_V5_2_CHANGELOG_FA.md و PIP_V5_2_QA_FA.md).
+// ساخته‌شده از ادغام «اندیکاتور ۴٫۲» و «بک‌تست ۴٫۴» در یک اسکریپت استراتژی.
+// دلیل ادغام: پلن Basic تریدینگ‌ویو فقط ۱ اسکریپت ذخیره‌شده می‌دهد؛ این فایل تنها
+// با همان یک اسلات، هم همه‌چیز اندیکاتور را روی چارت می‌کشد (OB، FVG، BOS/CHoCH،
+// Sweep، ۱-۲-۳، پرچم، سشن‌ها، داشبورد، هشدارها) و هم بک‌تست می‌گیرد (Strategy Tester).
+// مخصوص طلا (XAUUSD). ابزار آموزشی است — سیگنال خرید و فروش نیست. اول روی دمو تست کن.
+// تایم‌فریم پیشنهادی: H1 برای روند، M15 برای ورود.
+//
+// اصل طراحی: فقط «یک» موتور OB / FVG / ۱-۲-۳ وجود دارد. همان لمس اردر بلاکی که خطوط
+// ورود/حد ضرر/حد سود را روی چارت می‌کشد، معامله بک‌تست را هم باز می‌کند؛ پس چیزی که
+// می‌بینی دقیقاً همان چیزی است که بک‌تست گرفته است. ورودی useBacktest را خاموش کنی،
+// فایل مثل یک اندیکاتور خالص عمل می‌کند (بدون معامله).
+//
+// تفاوت‌های عمدی نسبت به ۴٫۲ و ۴٫۴ (جزئیات کامل: PIP_V5_0_MERGE_FA.md):
+//  - لایه‌ها (L1/L2/L3) و نمایش‌ها فقط «دیدن» را کنترل می‌کنند، نه موتور را؛
+//    پس خاموش‌کردن یک لایه، سیگنال‌ها و معاملات بک‌تست را عوض نمی‌کند.
+//  - لمس OB و به‌روزرسانی FVG فقط روی کندل تأییدشده ثبت می‌شوند (مثل بک‌تست ۴٫۴)؛
+//    در ۴٫۲ این‌ها وسط کندل هم ثبت می‌شدند.
+//  - ستاپ ریسک و ورود بک‌تست هر دو فقط وقتی ساخته می‌شوند که امتیاز OB حداقل
+//    minOBScore باشد و روند HTF هم‌راستا باشد.
+//  - ستاپ در انتظار و معامله باز دو حالت جداگانه‌اند: وقتی معامله‌ای باز است، خطوط
+//    ریسک روی چارت حد ضرر/حد سود «قفل‌شده» همان معامله را نشان می‌دهند و ستاپ جدید
+//    هرگز آن‌ها را عوض نمی‌کند؛ ستاپ جدید فقط بعد از بسته‌شدن معامله وارد می‌شود.
+//  - خروج‌ها: TP1 دقیقاً ۵۰٪، TP2 بقیه ۵۰٪، هر دو با حد ضرر محافظ؛ دسته‌بندی آمار
+//    با کامنت خروج (comment_profit/comment_loss) انجام می‌شود.
+//  - جدول آمار بک‌تست پایین-راست چارت است؛ داشبورد اندیکاتور بالا-راست (قابل تنظیم).
+//
+// هشدار مهم: آمار بک‌تست تضمین عملکرد آینده نیست. اسپرد، کمیسیون و لغزش قیمت
+// در بک‌تست تقریبی‌اند و در بازار واقعی متفاوت‌اند. فقط روی دمو تست کن.
+
+strategy("پیپ نسخه ۵٫۲ — فرکتال / اردر بلاک / گپ / پرچم + بک‌تست | طلا", shorttitle="پیپ ۵٫۲", overlay=true,
+     initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10,
+     currency=currency.USD, pyramiding=0, process_orders_on_close=true,
+     commission_type=strategy.commission.percent, commission_value=0.02, slippage=2,
+     max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ───────────────────────── ورودی‌ها ─────────────────────────
+grpTrend  = "روند و تایم بالاتر"
+grpFrac   = "فرکتال"
+grpOB     = "اردر بلاک (طلا)"
+grpFVG    = "گپ ارزش منصفانه"
+grp123    = "الگوی ۱-۲-۳"
+grpFlag   = "پرچم (آزمایشی)"
+grpSess   = "سشن‌ها"
+grpRisk   = "مدیریت ریسک"
+grpSize   = "حجم و مارجین (بر اساس قرارداد نماد)"
+grpRiskCtl = "کنترل‌های ریسک (همه پیش‌فرض خاموش‌اند)"
+grpBT     = "بک‌تست (استراتژی)"
+grpUI     = "رابط کاربری و لایه‌ها"
+grpAlert  = "هشدارها"
+
+// روند
+emaFastLen = input.int(50, "میانگین سریع", minval=5, maxval=200, group=grpTrend)
+emaSlowLen = input.int(200, "میانگین کند", minval=20, maxval=400, group=grpTrend)
+htfTF      = input.timeframe("60", "تایم‌فریم بالاتر", group=grpTrend)
+obOnlyHTF  = input.bool(true, "اردر بلاک فقط در جهت روند تایم بالاتر", group=grpTrend)
+htfFallback = input.bool(true, "اگر HTF نامعتبر است، از روند چارت استفاده کن", group=grpTrend, tooltip="وقتی تایم‌فریم چارت از HTF بزرگ‌تر است، HTF نامعتبر است. اگر این گزینه روشن باشد، روند چارت جای HTF می‌نشیند (در داشبورد «نامعتبر — روند چارت» نشان داده می‌شود). اگر خاموش باشد، HTF خنثی فرض می‌شود و هیچ ورودی هم‌راستا با HTF پیدا نمی‌شود، پس معامله‌ای باز نمی‌شود.")
+
+// فرکتال
+showFractal = input.bool(true, "نمایش فرکتال", group=grpFrac)
+fractalLen  = input.int(2, "تعداد کندل هر طرف فرکتال", minval=1, maxval=5, group=grpFrac)
+
+// اردر بلاک
+showOB      = input.bool(true, "نمایش اردر بلاک", group=grpOB)
+obLookback  = input.int(20, "بازگشت جستجوی کندل مخالف (کندل)", minval=5, maxval=50, group=grpOB)
+obDispATR   = input.float(1.0, "حداقل جابه‌جایی (برابر ATR 14)", minval=0.3, maxval=3.0, step=0.1, group=grpOB)
+obMaxTotal  = input.int(6, "حداکثر باکس اردر بلاک در مجموع (هر دو جهت)", minval=2, maxval=12, group=grpOB)
+obExtend    = input.int(30, "تمدید باکس (کندل)", minval=5, maxval=100, group=grpOB)
+minOBScore  = input.int(55, "حداقل امتیاز OB برای ستاپ و ورود (۰ تا ۱۰۰)", minval=0, maxval=100, group=grpOB)
+showOBScore = input.bool(true, "نمایش امتیاز روی اردر بلاک", group=grpOB)
+structLookback = input.int(5, "مهلت تأیید ساختار برای امتیاز OB (کندل)", minval=1, maxval=20, group=grpOB, tooltip="BOS یا CHoCH تا این‌قدر کندل قبل از ساخت OB هم برای امتیاز ساختار حساب می‌شود؛ فقط رویداد همان کندل حساب نمی‌شود.")
+sweepLookback  = input.int(5, "مهلت جاروی نقدینگی برای امتیاز OB (کندل)", minval=1, maxval=20, group=grpOB, tooltip="جاروی نقدینگی تا این‌قدر کندل قبل از ساخت OB هم برای امتیاز جارو حساب می‌شود.")
+obMaxAge       = input.int(200, "حداکثر عمر اردر بلاک (کندل)", minval=20, maxval=500, group=grpOB, tooltip="اردر بلاکی که این‌قدر کندل از ساختش گذشته باشد، به‌صورت خودکار حذف می‌شود؛ تمدید باکس (obExtend) عمر ناحیه را بیشتر نمی‌کند.")
+obFirstTouchOnly = input.bool(false, "فقط اولین لمس OB ستاپ بسازد", group=grpOB, tooltip="روشن باشد: بعد از اولین لمس یک اردر بلاک، لمس‌های بعدی آن ناحیه دیگر ستاپ نمی‌سازند. خاموش باشد: هر بار که قیمت وارد ناحیه شود و دوباره بیرون برود، لمس دوباره حساب می‌شود (حالت Retest).")
+
+// گپ ارزش منصفانه
+showFVG     = input.bool(true, "نمایش گپ ارزش منصفانه", group=grpFVG)
+fvgMaxTotal = input.int(6, "حداکثر باکس گپ در مجموع (هر دو جهت)", minval=2, maxval=12, group=grpFVG)
+showFVGFil  = input.bool(true, "نمایش درصد پرشدگی گپ", group=grpFVG)
+fvgMaxAge     = input.int(200, "حداکثر عمر گپ (کندل)", minval=20, maxval=500, group=grpFVG, tooltip="گپی که این‌قدر کندل از ساختش گذشته باشد، به‌صورت خودکار حذف می‌شود.")
+fvgExtend     = input.int(30, "تمدید باکس گپ (کندل)", minval=5, maxval=100, group=grpFVG, tooltip="تمدید باکس گپ جدا از تمدید باکس اردر بلاک است و عمر گپ را بیشتر نمی‌کند.")
+
+// ۱-۲-۳ و پرچم
+show123     = input.bool(true, "الگوی ۱-۲-۳ فعال باشد (نمایش + ورود بک‌تست)", group=grp123)
+max123Age   = input.int(30, "حداکثر عمر الگوی ۱-۲-۳ (کندل)", minval=5, maxval=100, group=grp123, tooltip="اگر از ساخت نقطه ۱ تا شکست نقطه ۲ بیش از این‌قدر کندل بگذرد، الگو باطل می‌شود و از اول ساخته می‌شود.")
+showFlag    = input.bool(true, "نمایش پرچم (آزمایشی)", group=grpFlag)
+flagPoleATR = input.float(1.5, "حداقل حرکت میله پرچم (برابر ATR)", minval=0.5, maxval=4.0, step=0.1, group=grpFlag)
+flagMaxRet  = input.float(0.5, "حداکثر اصلاح نسبت به میله", minval=0.2, maxval=0.8, step=0.05, group=grpFlag)
+
+// سشن‌ها — این ورودی‌ها فقط پس‌زمینه سشن را کنترل می‌کنند؛ امتیاز OB همیشه
+// با سشن‌های واقعی حساب می‌شود، حتی اگر پس‌زمینه یک سشن خاموش باشد.
+showSessBG  = input.bool(false, "نمایش پس‌زمینه سشن (پیش‌فرض خاموش)", group=grpSess)
+showAsia    = input.bool(true, "پس‌زمینه سشن آسیا", group=grpSess)
+showLondon  = input.bool(true, "پس‌زمینه سشن لندن", group=grpSess)
+showNY      = input.bool(true, "پس‌زمینه سشن نیویورک", group=grpSess)
+showKillZone = input.bool(true, "پس‌زمینه Kill Zone لندن / نیویورک", group=grpSess)
+showSessHL  = input.bool(false, "نمایش سقف / کف سشن جاری", group=grpSess)
+
+// ریسک
+showRisk   = input.bool(true, "نمایش ورود / حد ضرر / حد سود آخرین ستاپ", group=grpRisk)
+atrBuffer  = input.float(0.2, "فاصله حد ضرر از ناحیه (برابر ATR)", minval=0.0, maxval=1.0, step=0.05, group=grpRisk)
+tp1RR      = input.float(2.0, "نسبت حد سود ۱", minval=0.5, maxval=5.0, step=0.5, group=grpRisk)
+tp2RR      = input.float(3.0, "نسبت حد سود ۲", minval=1.0, maxval=6.0, step=0.5, group=grpRisk)
+
+// حجم و مارجین — حجم از ریسک دلاری تقسیم بر (فاصله حد ضرر × ارزش یک واحد قیمت) حساب
+// می‌شود؛ ارزش یک واحد قیمت از syminfo.pointvalue خوانده می‌شود، پس با هر فید
+// XAUUSD (اونس، قرارداد ۱۰۰ اونسی و...) درست کار می‌کند. پیش‌فرض‌ها طوری‌اند که
+// برای OANDA:XAUUSD رفتار پیش‌فرض مثل ۵٫۱ بماند (pointvalue=۱).
+qtyStep    = input.float(0.01, "گام حجم (حداقل افزایش حجم)", minval=0.001, maxval=1.0, step=0.001, group=grpSize, tooltip="حجم به پایین‌ترین مضرب این گام گرد می‌شود؛ گام کارگزار خودت را بگذار (مثلاً ۰٫۰۱).")
+minQty     = input.float(0.01, "حداقل حجم", minval=0.001, maxval=1.0, step=0.001, group=grpSize, tooltip="اگر حجم محاسبه‌شده کمتر از این باشد، معامله باز نمی‌شود.")
+maxQty     = input.float(100.0, "حداکثر حجم", minval=0.1, maxval=1000.0, step=1.0, group=grpSize)
+maxNotional = input.float(1000000.0, "حداکثر ارزش اسمی معامله (دلار)", minval=1000.0, maxval=10000000.0, step=1000.0, group=grpSize, tooltip="ارزش اسمی = حجم × قیمت ورود × pointvalue. اگر حجم محاسبه‌شده از این سقف بگذرد، کم می‌شود.")
+leverage   = input.float(20.0, "اهرم (برای محاسبه مارجین)", minval=1.0, maxval=500.0, step=1.0, group=grpSize)
+maxMarginUsePct = input.float(100.0, "حداکثر مصرف مارجین (٪ سرمایه)", minval=1.0, maxval=100.0, step=5.0, group=grpSize, tooltip="مارجین لازم = ارزش اسمی ÷ اهرم. اگر از این درصد سرمایه بگذرد، حجم کم می‌شود تا مارجین در حد بماند.")
+
+// کنترل‌های ریسک — همه پیش‌فرض خاموش‌اند (۰ یا خاموش) تا رفتار پیش‌فرض مثل ۵٫۱ بماند.
+maxDailyLoss    = input.float(0.0, "حداکثر ضرر روزانه (دلار، ۰ = خاموش)", minval=0.0, maxval=10000.0, step=10.0, group=grpRiskCtl, tooltip="اگر ضرر امروز (از شروع روز) به این عدد برسد، تا پایان روز معامله جدیدی باز نمی‌شود.")
+maxConsecLosses = input.int(0, "حداکثر ضرر پشت سر هم (۰ = خاموش)", minval=0, maxval=20, group=grpRiskCtl, tooltip="اگر این‌قدر معامله پشت سر هم با ضرر بسته شود، ورود جدید بلوکه می‌شود تا یک معامله سودده بیاید.")
+maxTradesPerDay = input.int(0, "حداکثر معامله در روز (۰ = خاموش)", minval=0, maxval=50, group=grpRiskCtl)
+cooldownAfterSL = input.int(0, "مکث بعد از حد ضرر (کندل، ۰ = خاموش)", minval=0, maxval=100, group=grpRiskCtl, tooltip="بعد از بسته‌شدن یک معامله با حد ضرر، این‌قدر کندل معامله جدیدی باز نمی‌شود.")
+maxHoldBars     = input.int(0, "حداکثر مدت نگهداری معامله (کندل، ۰ = خاموش)", minval=0, maxval=500, group=grpRiskCtl, tooltip="اگر معامله باز بیش از این‌قدر کندل باز بماند، با قیمت بازار بسته می‌شود.")
+minATR          = input.float(0.0, "حداقل ATR برای ورود (۰ = خاموش)", minval=0.0, maxval=50.0, step=0.1, group=grpRiskCtl, tooltip="اگر ATR کمتر از این باشد، بازار را بی‌نوسان می‌دانیم و معامله‌ای باز نمی‌شود.")
+tradeOnlyInSession = input.bool(false, "معامله فقط در سشن لندن یا نیویورک", group=grpRiskCtl)
+
+// بک‌تست
+useBacktest = input.bool(true, "بک‌تست فعال باشد (ورود/خروج استراتژی)", group=grpBT)
+riskPct     = input.float(1.0, "ریسک هر معامله (٪ سرمایه)", minval=0.1, maxval=5.0, step=0.1, group=grpBT)
+startDate   = input.time(timestamp("2024-01-01"), "شروع بک‌تست", group=grpBT)
+endDate     = input.time(timestamp("2030-01-01"), "پایان بک‌تست (این روز شامل نمی‌شود)", group=grpBT)
+// کمیسیون (۰٫۰۲٪) و لغزش (۲ تیک) مستقیم در فراخوانی strategy() ست شده‌اند؛
+// برای تغییر آن‌ها، همان دو عدد را در خط strategy() عوض کن.
+
+// رابط کاربری
+showL1     = input.bool(true, "لایه ۱ — ضروری (روند، EMA، داشبورد، ساختار، اردر بلاک باکیفیت)", group=grpUI)
+showL2     = input.bool(true, "لایه ۲ — پیشرفته (FVG، Sweep، فرکتال، Premium/Discount، سشن)", group=grpUI)
+showL3     = input.bool(true, "لایه ۳ — ریسک (ورود، حد ضرر، حد سود)", group=grpUI)
+showDash   = input.bool(true, "نمایش داشبورد", group=grpUI)
+dashPos    = input.string("Top Right", "موقعیت داشبورد", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpUI)
+dashCompact = input.bool(true, "داشبورد جمع‌وجور (موبایل)", group=grpUI)
+maxLabels  = input.int(20, "حداکثر لیبل قابل مشاهده", minval=5, maxval=50, group=grpUI)
+
+// هشدارها — فعال/غیرفعال مستقل
+alOBBull  = input.bool(true, "هشدار لمس اردر بلاک صعودی", group=grpAlert)
+alOBBear  = input.bool(true, "هشدار لمس اردر بلاک نزولی", group=grpAlert)
+alBOSBull = input.bool(true, "هشدار BOS صعودی", group=grpAlert)
+alBOSBear = input.bool(true, "هشدار BOS نزولی", group=grpAlert)
+alCHBull  = input.bool(true, "هشدار CHoCH صعودی", group=grpAlert)
+alCHBear  = input.bool(true, "هشدار CHoCH نزولی", group=grpAlert)
+alSwpBull = input.bool(true, "هشدار جاروی نقدینگی صعودی", group=grpAlert)
+alSwpBear = input.bool(true, "هشدار جاروی نقدینگی نزولی", group=grpAlert)
+alFVGBull = input.bool(true, "هشدار ساخت گپ صعودی", group=grpAlert)
+alFVGBear = input.bool(true, "هشدار ساخت گپ نزولی", group=grpAlert)
+al123Bull = input.bool(true, "هشدار ۱-۲-۳ صعودی", group=grpAlert)
+al123Bear = input.bool(true, "هشدار ۱-۲-۳ نزولی", group=grpAlert)
+alFlgBull = input.bool(true, "هشدار پرچم صعودی (آزمایشی)", group=grpAlert)
+alFlgBear = input.bool(true, "هشدار پرچم نزولی (آزمایشی)", group=grpAlert)
+alOrderFill = input.bool(true, "هشدار پر شدن سفارش (ورود و بسته‌شدن معامله)", group=grpAlert, tooltip="هشدار جداگانه برای ورود و بسته‌شدن واقعی معامله؛ با هشدارهای تحلیلی (OB، BOS و...) فرق دارد.")
+
+// ───────────────────────── انواع داده (UDT) ─────────────────────────
+type OBZone
+    box b
+    float top
+    float bottom
+    int dir
+    int id
+    float score
+    float baseScore
+    bool touched
+    bool inZone
+    bool mitigated
+    bool invalid
+    int bar
+
+type FVGZone
+    box b
+    float top
+    float bottom
+    int dir
+    int id
+    float fillPct
+    bool mitigated
+    bool invalid
+    bool fillShown
+    int bar
+
+// ───────────────────────── هسته: ATR، EMA، روند ─────────────────────────
+atr     = ta.atr(14)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+bool atrOk = not na(atr) and atr > 0
+trendUp   = close > emaFast and emaFast > emaSlow
+trendDown = close < emaFast and emaFast < emaSlow
+trendState = trendUp ? 1 : trendDown ? -1 : 0
+
+// روند HTF فقط از کندل تأییدشده قبلی: close[1] با lookahead_on یعنی
+// مقدار کندل H1 که کامل بسته شده است؛ پس Repaint ندارد، ولی یک کندل H1 تأخیر دارد.
+[htfClose, htfEmaF, htfEmaS] = request.security(syminfo.tickerid, htfTF, [close[1], ta.ema(close, emaFastLen)[1], ta.ema(close, emaSlowLen)[1]], lookahead=barmerge.lookahead_on)
+htfTrend = htfClose > htfEmaF and htfEmaF > htfEmaS ? 1 : htfClose < htfEmaF and htfEmaF < htfEmaS ? -1 : 0
+htfValid = timeframe.in_seconds(htfTF) >= timeframe.in_seconds(timeframe.period)
+// HTF نامعتبر (تایم‌فریم چارت از HTF بزرگ‌تر است) دیگر بی‌سروصدا با روند چارت
+// جایگزین نمی‌شود: اگر htfFallback روشن باشد، روند چارت با برچسب «نامعتبر — روند چارت»
+// در داشبورد جای HTF می‌نشیند؛ اگر خاموش باشد، HTF خنثی (۰) فرض می‌شود و چون ورود
+// فقط با هم‌راستایی «دقیق» HTF انجام می‌شود، معامله‌ای باز نمی‌شود.
+htfTrendSafe = htfValid ? htfTrend : htfFallback ? trendState : 0
+// بازه بک‌تست نیمه‌باز [شروع، پایان): پایان ۲۰۳۰-۰۱-۰۱ یعنی تا آخر ۲۰۲۹ حساب می‌شود؛
+// پس پیش‌فرض پایان بک‌تست بلافاصله بعد از نصب منقضی نمی‌شود.
+inRange = time >= startDate and time < endDate
+
+// نکته Pine: تابع plot() فقط در بدنه اصلی (global scope) مجاز است و نمی‌تواند
+// داخل if باشد (خطای CE10188). پس نمایش EMA با سری شرطی کنترل می‌شود، نه با if.
+plot(showL1 ? emaFast : na, "EMA سریع", color=color.new(color.blue, 0))
+plot(showL1 ? emaSlow : na, "EMA کند", color=color.new(color.orange, 0))
+
+// ───────────────────────── سشن‌ها (Timezone واقعی، DST با موتور TradingView) ─────────────────────────
+// سشن‌های «واقعی» (بدون ورودی نمایش) برای امتیاز OB و نام سشن استفاده می‌شوند؛
+// ورودی‌های showAsia و ... فقط پس‌زمینه را کنترل می‌کنند.
+inAsiaRaw   = not na(time(timeframe.period, "0000-0600", "Asia/Tokyo"))
+inLondonRaw = not na(time(timeframe.period, "0800-1630", "Europe/London"))
+inNyRaw     = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+inLdnKzRaw  = not na(time(timeframe.period, "0700-0900", "Europe/London"))
+inNyKzRaw   = not na(time(timeframe.period, "0700-0900", "America/New_York"))
+inAsia   = showAsia and inAsiaRaw
+inLondon = showLondon and inLondonRaw
+inNY     = showNY and inNyRaw
+inLdnKZ  = showKillZone and inLdnKzRaw
+inNyKZ   = showKillZone and inNyKzRaw
+sessName = inLdnKzRaw ? "لندن KZ" : inNyKzRaw ? "نیویورک KZ" : inLondonRaw ? "لندن" : inNyRaw ? "نیویورک" : inAsiaRaw ? "آسیا" : "—"
+inAnySess = inAsiaRaw or inLondonRaw or inNyRaw or inLdnKzRaw or inNyKzRaw
+sessScoreBonus = inLdnKzRaw or inNyKzRaw ? 5.0 : inAnySess ? 2.0 : 0.0
+
+bgcolor(showSessBG and inLdnKZ ? color.new(color.purple, 93) : showSessBG and inNyKZ ? color.new(color.blue, 93) : showSessBG and inLondon ? color.new(color.teal, 94) : showSessBG and inNY ? color.new(color.orange, 94) : showSessBG and inAsia ? color.new(color.gray, 94) : na, title="پس‌زمینه سشن")
+
+// سقف / کف سشن جاری
+var float sessHi = na
+var float sessLo = na
+var string sessKey = ""
+sessKeyNow = inLdnKzRaw ? "LKZ" : inNyKzRaw ? "NKZ" : inLondonRaw ? "LDN" : inNyRaw ? "NY" : inAsiaRaw ? "ASIA" : ""
+if sessKeyNow != "" and sessKeyNow != sessKey
+    sessKey := sessKeyNow
+    sessHi := high
+    sessLo := low
+if sessKeyNow != ""
+    sessHi := math.max(sessHi, high)
+    sessLo := math.min(sessLo, low)
+plot(showSessHL and showL2 and not na(sessHi) ? sessHi : na, "سقف سشن", color=color.new(color.gray, 20), style=plot.style_linebr)
+plot(showSessHL and showL2 and not na(sessLo) ? sessLo : na, "کف سشن", color=color.new(color.gray, 20), style=plot.style_linebr)
+
+// ───────────────────────── فرکتال — دقیقاً روی Pivot ─────────────────────────
+ph = ta.pivothigh(high, fractalLen, fractalLen)
+pl = ta.pivotlow(low, fractalLen, fractalLen)
+
+var label[] evtLabels = array.new_label()
+var float lastPh = na
+var float lastPl = na
+var float prevPh = na
+var float prevPl = na
+
+// ردیابی سوئینگ همیشه انجام می‌شود، حتی اگر نمایش فرکتال خاموش باشد؛
+// چون BOS و CHoCH و Premium/Discount به همین سوئینگ‌ها وابسته‌اند.
+if not na(ph) and barstate.isconfirmed
+    prevPh := lastPh
+    lastPh := ph
+    if showFractal and showL2
+        label lb = label.new(bar_index - fractalLen, ph, "▼", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.red, 100), textcolor=color.new(color.red, 0), size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+if not na(pl) and barstate.isconfirmed
+    prevPl := lastPl
+    lastPl := pl
+    if showFractal and showL2
+        label lb = label.new(bar_index - fractalLen, pl, "▲", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.green, 100), textcolor=color.new(color.green, 0), size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+
+// ───────────────────────── ساختار بازار: BOS / CHoCH ─────────────────────────
+// موتور ساختار همیشه اجرا می‌شود (روی امتیاز OB و داشبورد اثر دارد)؛
+// فقط «لیبل»‌ها با لایه ۱ کنترل می‌شوند.
+// هر سوئینگ بعد از شکست، وضعیت broken می‌گیرد و دوباره سیگنال نمی‌دهد.
+// CHoCH بر اساس جهت ساختار قبلی است، نه EMA.
+var int structState = 0
+var bool swingHiBroken = false
+var bool swingLoBroken = false
+var string lastStruct = "—"
+bool bosUpEvt = false
+bool bosDnEvt = false
+bool chochUpEvt = false
+bool chochDnEvt = false
+
+if not na(ph)
+    swingHiBroken := false
+if not na(pl)
+    swingLoBroken := false
+
+if barstate.isconfirmed and not na(lastPh) and not swingHiBroken and close > lastPh
+    swingHiBroken := true
+    if structState == -1
+        chochUpEvt := true
+        lastStruct := "CHoCH"
+    else
+        bosUpEvt := true
+        lastStruct := "BOS"
+    structState := 1
+    if showL1
+        label lb = label.new(bar_index, low, chochUpEvt ? "CHoCH" : "BOS", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+
+if barstate.isconfirmed and not na(lastPl) and not swingLoBroken and close < lastPl
+    swingLoBroken := true
+    if structState == 1
+        chochDnEvt := true
+        lastStruct := "CHoCH"
+    else
+        bosDnEvt := true
+        lastStruct := "BOS"
+    structState := -1
+    if showL1
+        label lb = label.new(bar_index, high, chochDnEvt ? "CHoCH" : "BOS", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.maroon, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+
+// ───────────────────────── جاروی نقدینگی ─────────────────────────
+var bool swingHiSwept = false
+var bool swingLoSwept = false
+bool sweepUpEvt = false
+bool sweepDnEvt = false
+if not na(ph)
+    swingHiSwept := false
+if not na(pl)
+    swingLoSwept := false
+
+if barstate.isconfirmed and not na(lastPh) and not swingHiSwept and high > lastPh and close < lastPh
+    swingHiSwept := true
+    sweepUpEvt := true
+    if showL2
+        label lb = label.new(bar_index, high, "SWP", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.purple, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+if barstate.isconfirmed and not na(lastPl) and not swingLoSwept and low < lastPl and close > lastPl
+    swingLoSwept := true
+    sweepDnEvt := true
+    if showL2
+        label lb = label.new(bar_index, low, "SWP", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.purple, 0), textcolor=color.white, size=size.tiny)
+        array.push(evtLabels, lb)
+        if array.size(evtLabels) > maxLabels
+            label.delete(array.shift(evtLabels))
+
+// ───────────────────────── حافظه کوتاه‌مدت رویدادها (برای امتیاز OB) ─────────────────────────
+// BOS/CHoCH و جاروی نقدینگی تا چند کندل قبل از ساخت OB هم برای امتیاز حساب می‌شوند،
+// نه فقط رویداد همان کندل (ورودی‌های structLookback و sweepLookback).
+var int lastStructUpBar = na
+var int lastStructDnBar = na
+var int lastSweepUpBar = na
+var int lastSweepDnBar = na
+if bosUpEvt or chochUpEvt
+    lastStructUpBar := bar_index
+if bosDnEvt or chochDnEvt
+    lastStructDnBar := bar_index
+if sweepUpEvt
+    lastSweepUpBar := bar_index
+if sweepDnEvt
+    lastSweepDnBar := bar_index
+bool structUpRecent = not na(lastStructUpBar) and bar_index - lastStructUpBar <= structLookback
+bool structDnRecent = not na(lastStructDnBar) and bar_index - lastStructDnBar <= structLookback
+bool sweepUpRecent = not na(lastSweepUpBar) and bar_index - lastSweepUpBar <= sweepLookback
+bool sweepDnRecent = not na(lastSweepDnBar) and bar_index - lastSweepDnBar <= sweepLookback
+
+// ───────────────────────── توابع خالص (هیچ متغیر سراسری را تغییر نمی‌دهند) ─────────────────────────
+f_lastOpp(int dir, int n) =>
+    int idx = na
+    for i = 1 to n
+        if na(idx) and dir == 1 and close[i] < open[i]
+            idx := i
+        if na(idx) and dir == -1 and close[i] > open[i]
+            idx := i
+    idx
+
+f_overlap(float cLow, float cHigh, float zBot, float zTop) =>
+    cLow <= zTop and cHigh >= zBot
+
+// ───────────────────────── اردر بلاک — یک موتور برای نمایش و بک‌تست ─────────────────────────
+// آرایه FVG اینجا اعلان می‌شود تا امتیاز OB بتواند هم‌پوشانی با FVG را بسنجد؛
+// ساخت FVGها در بخش بعدی انجام می‌شود.
+var FVGZone[] fvgZones = array.new<FVGZone>()
+var int fvgNextId = 1
+var OBZone[] obZones = array.new<OBZone>()
+var int obNextId = 1
+bool obBullTouchEvt = false
+bool obBearTouchEvt = false
+int touchBullId = na
+float touchBullTop = na
+float touchBullBot = na
+float touchBullScore = na
+int touchBearId = na
+float touchBearTop = na
+float touchBearBot = na
+float touchBearScore = na
+
+bullDisp = atrOk and close > open and (close - open) > atr * obDispATR and close > high[1]
+bearDisp = atrOk and close < open and (open - close) > atr * obDispATR and close < low[1]
+// obOnlyHTF روشن: ساخت OB فقط وقتی HTF دقیقاً هم‌جهت است؛ HTF خنثی هر دو جهت را
+// می‌بندد (در ۵٫۱ خنثی هر دو جهت را باز می‌گذاشت — این یک تغییر مستند است).
+bullAllowed = not obOnlyHTF or htfTrendSafe == 1
+bearAllowed = not obOnlyHTF or htfTrendSafe == -1
+
+// امتیاز OB: HTF هم‌راستا ۲۵ / خنثی ۱۰ / مخالف ۰، قدرت جابه‌جایی تا ۲۰، تأیید ساختار ۱۵،
+// جاروی نقدینگی ۱۰، هم‌پوشانی FVG «هم‌جهت» ۱۵، سشن ۵ — پایه حداکثر ۹۰.
+// تازگی (تا ۱۰) جدا حساب می‌شود و با گذشت زمان کم می‌شود؛ امتیاز نهایی حداکثر ۱۰۰ است.
+// تغییر نسبت به ۵٫۱ (مستند): HTF خنثی قبلاً ۲۵ می‌گرفت، حالا ۱۰ می‌گیرد، چون خنثی
+// هم‌راستایی کامل نیست. امتیاز احتمال موفقیت معامله نیست؛ فقط کیفیت نسبی ناحیه را نشان می‌دهد.
+f_obScore(float disp, int htfPts, bool structOk, bool sweepOk, bool fvgOk, float atrVal, float sessBonus) =>
+    float s = 0.0
+    s := s + htfPts
+    s := s + math.min(disp / atrVal, 3.0) / 3.0 * 20.0
+    s := s + (structOk ? 15.0 : 0.0)
+    s := s + (sweepOk ? 10.0 : 0.0)
+    s := s + (fvgOk ? 15.0 : 0.0)
+    s := s + sessBonus
+    math.min(s, 90.0)
+
+// تازگی: در لحظه ساخت ناحیه ۱۰ است و با رسیدن سن ناحیه به obMaxAge خطی به صفر می‌رسد.
+// سن از کندلِ ناحیه (نه کندل ساخت) حساب می‌شود.
+f_freshScore(int ageBars) =>
+    10.0 * math.max(0.0, 1.0 - ageBars / obMaxAge)
+
+// ساخت ناحیه همیشه انجام می‌شود؛ باکس فقط وقتی ساخته می‌شود که نمایش OB روشن باشد.
+// اگر نمایش خاموش باشد، ناحیه بدون باکس (b = na) نگه داشته می‌شود تا بک‌تست کار کند.
+if bullDisp and bullAllowed and barstate.isconfirmed
+    int bi = f_lastOpp(1, obLookback)
+    if not na(bi)
+        bool dup = false
+        if array.size(obZones) > 0
+            for i = 0 to array.size(obZones) - 1
+                OBZone z = array.get(obZones, i)
+                if z.bar == bar_index - bi
+                    dup := true
+        if not dup
+            float top = high[bi]
+            float bot = low[bi]
+            bool fvgConf = false
+            if array.size(fvgZones) > 0
+                for i = 0 to array.size(fvgZones) - 1
+                    FVGZone fz = array.get(fvgZones, i)
+                    // هم‌پوشانی FVG فقط وقتی حساب می‌شود که جهت گپ هم با OB هم‌راستا باشد.
+                    if fz.dir == 1 and f_overlap(bot, top, fz.bottom, fz.top)
+                        fvgConf := true
+            float sc = f_obScore(close - open, htfTrendSafe == 1 ? 25 : htfTrendSafe == 0 ? 10 : 0, structUpRecent, sweepDnRecent, fvgConf, atr, sessScoreBonus)
+            box b = na
+            if showOB and showL1
+                b := box.new(bar_index - bi, top, bar_index + obExtend, bot, bgcolor=color.new(color.green, 82), border_color=color.new(color.green, 0), border_width=1)
+            // score و baseScore در لحظه ساخت برابرند؛ تازگی در حلقه به‌روزرسانی اضافه می‌شود.
+            OBZone nz = OBZone.new(b, top, bot, 1, obNextId, sc, sc, false, false, false, false, bar_index - bi)
+            obNextId += 1
+            array.push(obZones, nz)
+            while array.size(obZones) > obMaxTotal
+                OBZone old = array.shift(obZones)
+                if not na(old.b)
+                    box.delete(old.b)
+
+if bearDisp and bearAllowed and barstate.isconfirmed
+    int bi = f_lastOpp(-1, obLookback)
+    if not na(bi)
+        bool dup = false
+        if array.size(obZones) > 0
+            for i = 0 to array.size(obZones) - 1
+                OBZone z = array.get(obZones, i)
+                if z.bar == bar_index - bi
+                    dup := true
+        if not dup
+            float top = high[bi]
+            float bot = low[bi]
+            bool fvgConf = false
+            if array.size(fvgZones) > 0
+                for i = 0 to array.size(fvgZones) - 1
+                    FVGZone fz = array.get(fvgZones, i)
+                    // هم‌پوشانی FVG فقط وقتی حساب می‌شود که جهت گپ هم با OB هم‌راستا باشد.
+                    if fz.dir == -1 and f_overlap(bot, top, fz.bottom, fz.top)
+                        fvgConf := true
+            float sc = f_obScore(open - close, htfTrendSafe == -1 ? 25 : htfTrendSafe == 0 ? 10 : 0, structDnRecent, sweepUpRecent, fvgConf, atr, sessScoreBonus)
+            box b = na
+            if showOB and showL1
+                b := box.new(bar_index - bi, top, bar_index + obExtend, bot, bgcolor=color.new(color.red, 82), border_color=color.new(color.red, 0), border_width=1)
+            // score و baseScore در لحظه ساخت برابرند؛ تازگی در حلقه به‌روزرسانی اضافه می‌شود.
+            OBZone nz = OBZone.new(b, top, bot, -1, obNextId, sc, sc, false, false, false, false, bar_index - bi)
+            obNextId += 1
+            array.push(obZones, nz)
+            while array.size(obZones) > obMaxTotal
+                OBZone old = array.shift(obZones)
+                if not na(old.b)
+                    box.delete(old.b)
+
+// انقضای OB بر اساس سن — جدا از حلقه به‌روزرسانی، تا ساختار آن دست نخورد.
+// تمدید باکس (obExtend) فقط لبه راست باکس را جلو می‌برد و عمر ناحیه را بیشتر نمی‌کند.
+if barstate.isconfirmed and array.size(obZones) > 0
+    for i = array.size(obZones) - 1 to 0
+        OBZone z = array.get(obZones, i)
+        if bar_index - z.bar > obMaxAge
+            if not na(z.b)
+                box.delete(z.b)
+            array.remove(obZones, i)
+
+// به‌روزرسانی OBها — فقط روی کندل تأییدشده (مثل بک‌تست ۴٫۴).
+// Touch با هم‌پوشانی واقعی، Mitigation، Invalidation.
+// اگر چند ناحیه هم‌زمان لمس شدند، پرامتیازترین سیگنال همان کندل است (نه جدیدترین).
+float bestObScore = na
+if barstate.isconfirmed and array.size(obZones) > 0
+    for i = array.size(obZones) - 1 to 0
+        OBZone z = array.get(obZones, i)
+        if not na(z.b)
+            box.set_right(z.b, bar_index + obExtend)
+        // امتیاز مؤثر: پایه + تازگی؛ تازگی با گذشت زمان خطی کم می‌شود.
+        z.score := z.baseScore + f_freshScore(bar_index - z.bar)
+        bool overlap = f_overlap(low, high, z.bottom, z.top)
+        bool invalidNow = z.dir == 1 ? close < z.bottom : close > z.top
+        if invalidNow
+            z.invalid := true
+            if not na(z.b)
+                box.delete(z.b)
+            array.remove(obZones, i)
+        else
+            if overlap
+                // obFirstTouchOnly روشن: لمس دوم به بعدِ یک ناحیه ستاپ نمی‌سازد.
+                if not z.inZone and (not obFirstTouchOnly or not z.touched)
+                    z.inZone := true
+                    z.touched := true
+                    z.mitigated := true
+                    string lbl = z.dir == 1 ? "OB+" : "OB-"
+                    if showOBScore
+                        lbl := lbl + " " + str.tostring(math.round(z.score))
+                    if showOB and showL1
+                        label lb = label.new(bar_index, z.dir == 1 ? low : high, lbl, xloc=xloc.bar_index, style=z.dir == 1 ? label.style_label_up : label.style_label_down, color=z.dir == 1 ? color.new(color.green, 0) : color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+                        array.push(evtLabels, lb)
+                        if array.size(evtLabels) > maxLabels
+                            label.delete(array.shift(evtLabels))
+                    if z.dir == 1
+                        if na(touchBullScore) or z.score > touchBullScore
+                            obBullTouchEvt := true
+                            touchBullId := z.id
+                            touchBullTop := z.top
+                            touchBullBot := z.bottom
+                            touchBullScore := z.score
+                    else
+                        if na(touchBearScore) or z.score > touchBearScore
+                            obBearTouchEvt := true
+                            touchBearId := z.id
+                            touchBearTop := z.top
+                            touchBearBot := z.bottom
+                            touchBearScore := z.score
+            else
+                z.inZone := false
+            if z.score >= minOBScore and (na(bestObScore) or z.score > bestObScore)
+                bestObScore := z.score
+            // ناحیه کم‌امتیاز در حالت پیش‌فرض دیده نمی‌شود
+            if not na(z.b)
+                box.set_bgcolor(z.b, z.score >= minOBScore ? (z.dir == 1 ? color.new(color.green, 82) : color.new(color.red, 82)) : color.new(color.gray, 90))
+
+// اگر نمایش OB خاموش شد، فقط باکس‌ها پاک شوند — ناحیه‌ها برای بک‌تست می‌مانند.
+if (not showOB or not showL1) and array.size(obZones) > 0
+    for i = array.size(obZones) - 1 to 0
+        OBZone z = array.get(obZones, i)
+        if not na(z.b)
+            box.delete(z.b)
+            z.b := na
+
+// ───────────────────────── گپ ارزش منصفانه ─────────────────────────
+bool fvgBullEvt = false
+bool fvgBearEvt = false
+
+bullFVGNew = low > high[2] and close > open
+bearFVGNew = high < low[2] and close < open
+// ساخت گپ همیشه انجام می‌شود (روی امتیاز OB اثر دارد)؛ باکس فقط وقتی نمایش روشن باشد.
+if bullFVGNew and barstate.isconfirmed
+    float top = math.max(low, high[2])
+    float bot = math.min(low, high[2])
+    box b = na
+    if showFVG and showL2
+        b := box.new(bar_index - 2, top, bar_index + fvgExtend, bot, bgcolor=color.new(color.aqua, 86), border_color=color.new(color.aqua, 0))
+    FVGZone nz = FVGZone.new(b, top, bot, 1, fvgNextId, 0.0, false, false, false, bar_index - 2)
+    fvgNextId += 1
+    array.push(fvgZones, nz)
+    fvgBullEvt := true
+    while array.size(fvgZones) > fvgMaxTotal
+        FVGZone old = array.shift(fvgZones)
+        if not na(old.b)
+            box.delete(old.b)
+if bearFVGNew and barstate.isconfirmed
+    float top = math.max(low[2], high)
+    float bot = math.min(low[2], high)
+    box b = na
+    if showFVG and showL2
+        b := box.new(bar_index - 2, top, bar_index + fvgExtend, bot, bgcolor=color.new(color.fuchsia, 86), border_color=color.new(color.fuchsia, 0))
+    FVGZone nz = FVGZone.new(b, top, bot, -1, fvgNextId, 0.0, false, false, false, bar_index - 2)
+    fvgNextId += 1
+    array.push(fvgZones, nz)
+    fvgBearEvt := true
+    while array.size(fvgZones) > fvgMaxTotal
+        FVGZone old = array.shift(fvgZones)
+        if not na(old.b)
+            box.delete(old.b)
+
+// انقضای FVG بر اساس سن — جدا از حلقه به‌روزرسانی.
+if barstate.isconfirmed and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        if bar_index - z.bar > fvgMaxAge
+            if not na(z.b)
+                box.delete(z.b)
+            array.remove(fvgZones, i)
+
+// به‌روزرسانی FVGها — فقط روی کندل تأییدشده (مثل بک‌تست ۴٫۴).
+if barstate.isconfirmed and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        if not na(z.b)
+            box.set_right(z.b, bar_index + fvgExtend)
+        float gapSize = z.top - z.bottom
+        if z.dir == 1
+            float entered = math.max(0.0, z.top - low)
+            z.fillPct := gapSize > 0 ? math.min(entered / gapSize, 1.0) : 0.0
+            if low < z.top and close > z.bottom
+                z.mitigated := true
+            bool fullFill = low <= z.bottom
+            bool invalidNow = close < z.bottom
+            if fullFill or invalidNow
+                z.invalid := true
+                if not na(z.b)
+                    box.delete(z.b)
+                array.remove(fvgZones, i)
+        else
+            float entered = math.max(0.0, high - z.bottom)
+            z.fillPct := gapSize > 0 ? math.min(entered / gapSize, 1.0) : 0.0
+            if high > z.bottom and close < z.top
+                z.mitigated := true
+            bool fullFill = high >= z.top
+            bool invalidNow = close > z.top
+            if fullFill or invalidNow
+                z.invalid := true
+                if not na(z.b)
+                    box.delete(z.b)
+                array.remove(fvgZones, i)
+        // نمایش درصد پرشدگی: یک بار، وقتی پرشدگی به ۵۰٪ رسید
+        if showFVGFil and showL2 and not z.invalid and z.fillPct >= 0.5 and not z.fillShown
+            z.fillShown := true
+            label lb = label.new(bar_index, z.dir == 1 ? z.top : z.bottom, (z.dir == 1 ? "FVG+ " : "FVG- ") + str.tostring(math.round(z.fillPct * 100)) + "٪", xloc=xloc.bar_index, style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+            array.push(evtLabels, lb)
+            if array.size(evtLabels) > maxLabels
+                label.delete(array.shift(evtLabels))
+
+// اگر نمایش FVG خاموش شد، فقط باکس‌ها پاک شوند — گپ‌ها برای امتیاز OB می‌مانند.
+if (not showFVG or not showL2) and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FVGZone z = array.get(fvgZones, i)
+        if not na(z.b)
+            box.delete(z.b)
+            z.b := na
+
+// ───────────────────────── الگوی ۱-۲-۳ — State Machine ─────────────────────────
+// حالت‌ها: ۰=انتظار نقطه ۱، ۱=انتظار نقطه ۲، ۲=انتظار نقطه ۳، ۳=انتظار تأیید،
+// ۴=تأییدشده (یک کندل)، ۵=باطل‌شده (یک کندل و بعد ریست)
+// نکته مهم: پیوت‌ها (ta.pivothigh/low) فقط fractalLen کندل «بعد» از سوئینگ تأیید می‌شوند؛
+// پس نقطه‌ها و سیگنال همیشه با تأخیر ثبت می‌شوند، نه روی کندل سوئینگ. سیگنال ۱-۲-۳
+// در لحظه تأیید (شکست نقطه ۲ با بسته‌شدن کندل) صادر می‌شود، نه عقب‌تر — Repaint ندارد.
+var float bP1 = na
+var float bP2 = na
+var float bP3 = na
+var int bStage = 0
+var int bP1Bar = na
+var float sP1 = na
+var float sP2 = na
+var float sP3 = na
+var int sStage = 0
+var int sP1Bar = na
+bool bull123Evt = false
+bool bear123Evt = false
+
+// صعودی: نقطه ۱ = سوئینگ Low، نقطه ۲ = سوئینگ High، نقطه ۳ = Higher Low، تأیید = شکست نقطه ۲
+if show123 and barstate.isconfirmed
+    // حداکثر عمر الگو: اگر از نقطه ۱ تا تأیید بیش از max123Age کندل بگذرد، الگو باطل می‌شود.
+    if bStage != 0 and not na(bP1Bar) and bar_index - bP1Bar > max123Age
+        bStage := 5
+    if bStage == 0
+        if not na(pl)
+            bP1 := pl
+            bP1Bar := bar_index
+            bStage := 1
+    else if bStage == 1
+        if not na(ph) and ph > bP1
+            bP2 := ph
+            bStage := 2
+        else if not na(pl) and pl < bP1
+            bP1 := pl
+            bP1Bar := bar_index
+    else if bStage == 2
+        if not na(pl) and pl > bP1 and pl < bP2
+            bP3 := pl
+            bStage := 3
+        else if not na(ph) and ph > bP2
+            bP2 := ph
+        else if not na(pl) and pl <= bP1
+            // کف جدید پایین‌تر از نقطه ۱: نقطه ۱ شکسته شد، الگو باطل است.
+            bStage := 5
+        else if close < bP1
+            bStage := 5
+    else if bStage == 3
+        if close > bP2
+            bull123Evt := true
+            bStage := 4
+        else if not na(pl) and pl < bP1
+            // پیوت جدید پایین‌تر از نقطه ۱: نقطه ۱ شکسته شد، الگو باطل است.
+            bStage := 5
+        else if close < bP1
+            bStage := 5
+    else if bStage == 4 or bStage == 5
+        bStage := 0
+        bP1 := na
+        bP2 := na
+        bP3 := na
+        bP1Bar := na
+
+// نزولی: معکوس کامل
+if show123 and barstate.isconfirmed
+    if sStage != 0 and not na(sP1Bar) and bar_index - sP1Bar > max123Age
+        sStage := 5
+    if sStage == 0
+        if not na(ph)
+            sP1 := ph
+            sP1Bar := bar_index
+            sStage := 1
+    else if sStage == 1
+        if not na(pl) and pl < sP1
+            sP2 := pl
+            sStage := 2
+        else if not na(ph) and ph > sP1
+            sP1 := ph
+            sP1Bar := bar_index
+    else if sStage == 2
+        if not na(ph) and ph < sP1 and ph > sP2
+            sP3 := ph
+            sStage := 3
+        else if not na(pl) and pl < sP2
+            sP2 := pl
+        else if not na(ph) and ph >= sP1
+            // سقف جدید بالاتر از نقطه ۱: نقطه ۱ شکسته شد، الگو باطل است.
+            sStage := 5
+        else if close > sP1
+            sStage := 5
+    else if sStage == 3
+        if close < sP2
+            bear123Evt := true
+            sStage := 4
+        else if not na(ph) and ph > sP1
+            // پیوت جدید بالاتر از نقطه ۱: نقطه ۱ شکسته شد، الگو باطل است.
+            sStage := 5
+        else if close > sP1
+            sStage := 5
+    else if sStage == 4 or sStage == 5
+        sStage := 0
+        sP1 := na
+        sP2 := na
+        sP3 := na
+        sP1Bar := na
+
+if bull123Evt and showL1
+    label lb = label.new(bar_index, low, "123", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.tiny)
+    array.push(evtLabels, lb)
+    if array.size(evtLabels) > maxLabels
+        label.delete(array.shift(evtLabels))
+if bear123Evt and showL1
+    label lb = label.new(bar_index, high, "123", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+    array.push(evtLabels, lb)
+    if array.size(evtLabels) > maxLabels
+        label.delete(array.shift(evtLabels))
+
+// ───────────────────────── پرچم — آزمایشی (Experimental) ─────────────────────────
+// پنجره‌ها «بدون هم‌پوشانی» و فقط روی کندل‌های تکمیل‌شده:
+//  - میله: حرکت ۵ کندله از close[11] تا close[6] (کندل‌های ۶ تا ۱۱)؛
+//  - اصلاح: ۵ کندل تکمیل‌شده قبل (کندل‌های ۱ تا ۵)؛ سقف/کف اصلاح از high[1] و low[1]؛
+//  - شکست: بسته‌شدن کندل جاری آن‌طرف بازه اصلاح.
+// اصلاحیه نسبت به ۵٫۱: در ۵٫۱ سقف/کف اصلاح با ta.highest(high, 5) حساب می‌شد که کندل
+// جاری را هم شامل می‌شد؛ چون high همیشه ≥ close است، شرط close > consHi «غیرممکن» بود
+// و پرچم صعودی هرگز نمی‌توانست سیگنال بدهد (نزولی هم همین‌طور). حالا پنجره اصلاح فقط
+// کندل‌های تکمیل‌شده است، پس شکست واقعاً ممکن است.
+// باطل‌شدن: اگر کندل قبلی از طرف مخالف بازه اصلاح خارج شده باشد، پرچم باطل است.
+// تشخیص پرچم ذاتاً قطعی نیست؛ به همین دلیل این بخش آزمایشی است و سیگنال معاملاتی نیست.
+bool bullFlagEvt = false
+bool bearFlagEvt = false
+float poleUp   = close[6] - close[11]
+float poleDown = close[11] - close[6]
+float consHi = ta.highest(high[1], 5)
+float consLo = ta.lowest(low[1], 5)
+float consRange = consHi - consLo
+if showFlag and barstate.isconfirmed
+    if poleUp > atr * flagPoleATR and consRange < poleUp * flagMaxRet and close > consHi and close[1] <= consHi and low[1] >= consLo
+        bullFlagEvt := true
+        if showL1
+            label lb = label.new(bar_index, low, "FLAG?", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.tiny)
+            array.push(evtLabels, lb)
+            if array.size(evtLabels) > maxLabels
+                label.delete(array.shift(evtLabels))
+    if poleDown > atr * flagPoleATR and consRange < poleDown * flagMaxRet and close < consLo and close[1] >= consLo and high[1] <= consHi
+        bearFlagEvt := true
+        if showL1
+            label lb = label.new(bar_index, high, "FLAG?", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.maroon, 0), textcolor=color.white, size=size.tiny)
+            array.push(evtLabels, lb)
+            if array.size(evtLabels) > maxLabels
+                label.delete(array.shift(evtLabels))
+
+// ───────────────────────── Premium / Discount — از سوئینگ‌های تأییدشده ─────────────────────────
+float swingHi = na(lastPh) ? na : lastPh
+float swingLo = na(lastPl) ? na : lastPl
+float eqLevel = not na(swingHi) and not na(swingLo) ? (swingHi + swingLo) / 2.0 : na
+plot(showL2 and not na(eqLevel) ? eqLevel : na, "خط تعادل ۵۰٪", color=color.new(color.gray, 30), style=plot.style_linebr)
+var label premLabel = na
+var label discLabel = na
+if showL2 and barstate.islast and not na(swingHi) and not na(swingLo)
+    if na(premLabel)
+        premLabel := label.new(bar_index, swingHi, "گران", style=label.style_label_down, color=color.new(color.red, 85), textcolor=color.white, size=size.tiny)
+        discLabel := label.new(bar_index, swingLo, "ارزان", style=label.style_label_up, color=color.new(color.green, 85), textcolor=color.white, size=size.tiny)
+    else
+        label.set_xy(premLabel, bar_index, swingHi)
+        label.set_xy(discLabel, bar_index, swingLo)
+if not showL2 and not na(premLabel)
+    label.delete(premLabel)
+    label.delete(discLabel)
+    premLabel := na
+    discLabel := na
+
+// ───────────────────────── مدیریت ریسک — ستاپ در انتظار و معامله باز، جدا ─────────────────────────
+// دو حالت مستقل (بازبینی ۵٫۲):
+//  الف) ستاپ در انتظار (pend*): آخرین ستاپ معتبر؛ با هر ستاپ جدید عوض می‌شود.
+//  ب) معامله باز (trade*): سطوح «قفل‌شده» معامله‌ای که واقعاً باز شده است؛ ستاپ جدید
+//     هرگز آن‌ها را عوض نمی‌کند و فقط وقتی پوزیشن واقعاً بسته شد ریست می‌شوند.
+// خطوط روی چارت: وقتی معامله باز است، سطوح قفل‌شده معامله را نشان می‌دهند؛ وقتی
+// پوزیشنی باز نیست، ستاپ در انتظار را نشان می‌دهند.
+var line slLine = na
+var line tp1Line = na
+var line tp2Line = na
+var label riskLabel = na
+// الف) ستاپ در انتظار
+var bool pendActive = false
+var int pendDir = 0
+var float pendEntry = na
+var float pendSL = na
+var float pendTP1 = na
+var float pendTP2 = na
+var int pendId = na
+var string pendSrc = ""
+// ب) معامله باز
+var bool tradeActive = false
+var int tradeDir = 0
+var float tradeEntry = na
+var float tradeSL = na
+var float tradeTP1 = na
+var float tradeTP2 = na
+var int tradeId = na
+var string tradeSrc = ""
+var bool tradeTP1Done = false
+var int tradeEntryBar = na
+
+bool newSetup = false
+int newSetupDir = 0
+float newSetupEntry = na
+float newSetupSL = na
+int newSetupId = na
+string newSetupSrc = ""
+bool setupStoredNow = false
+if barstate.isconfirmed
+    // ورود فقط با هم‌راستایی «دقیق» HTF انجام می‌شود: صعودی فقط وقتی HTF ‏۱ است،
+    // نزولی فقط وقتی HTF ‏-۱ است. HTF خنثی (۰) هیچ ستاپی نمی‌سازد.
+    if obBullTouchEvt and touchBullScore >= minOBScore and htfTrendSafe == 1 and (not pendActive or pendId != touchBullId)
+        newSetup := true
+        newSetupDir := 1
+        newSetupEntry := close
+        newSetupSL := touchBullBot - atr * atrBuffer
+        newSetupId := touchBullId
+        newSetupSrc := "OB+"
+    else if obBearTouchEvt and touchBearScore >= minOBScore and htfTrendSafe == -1 and (not pendActive or pendId != touchBearId)
+        newSetup := true
+        newSetupDir := -1
+        newSetupEntry := close
+        newSetupSL := touchBearTop + atr * atrBuffer
+        newSetupId := touchBearId
+        newSetupSrc := "OB-"
+    else if bull123Evt and htfTrendSafe == 1 and not na(bP3)
+        newSetup := true
+        newSetupDir := 1
+        newSetupEntry := close
+        newSetupSL := bP3 - atr * atrBuffer
+        newSetupId := -1
+        newSetupSrc := "123"
+    else if bear123Evt and htfTrendSafe == -1 and not na(sP3)
+        newSetup := true
+        newSetupDir := -1
+        newSetupEntry := close
+        newSetupSL := sP3 + atr * atrBuffer
+        newSetupId := -2
+        newSetupSrc := "123"
+
+if newSetup and not na(newSetupSL) and not na(newSetupEntry)
+    float riskAmt = math.abs(newSetupEntry - newSetupSL)
+    if riskAmt > 0
+        float tp1 = newSetupDir == 1 ? newSetupEntry + riskAmt * tp1RR : newSetupEntry - riskAmt * tp1RR
+        float tp2 = newSetupDir == 1 ? newSetupEntry + riskAmt * tp2RR : newSetupEntry - riskAmt * tp2RR
+        // ستاپ در انتظار همیشه ذخیره می‌شود، حتی وقتی معامله باز است؛
+        // اما خطوط روی چارت فقط وقتی معامله باز نیست با ستاپ جدید عوض می‌شوند.
+        pendActive := true
+        pendDir := newSetupDir
+        pendEntry := newSetupEntry
+        pendSL := newSetupSL
+        pendTP1 := tp1
+        pendTP2 := tp2
+        pendId := newSetupId
+        pendSrc := newSetupSrc
+        setupStoredNow := true
+        if not tradeActive
+            if not na(slLine)
+                line.delete(slLine)
+                line.delete(tp1Line)
+                line.delete(tp2Line)
+                label.delete(riskLabel)
+            if showRisk and showL3
+                slLine := line.new(bar_index, pendSL, bar_index + 20, pendSL, color=color.red, style=line.style_dashed)
+                tp1Line := line.new(bar_index, pendTP1, bar_index + 20, pendTP1, color=color.green, style=line.style_dashed)
+                tp2Line := line.new(bar_index, pendTP2, bar_index + 20, pendTP2, color=color.green, style=line.style_dotted)
+                riskLabel := label.new(bar_index + 20, pendTP1, "ورود " + str.tostring(pendEntry, format.mintick) + " | حد ضرر " + str.tostring(pendSL, format.mintick) + " | " + pendSrc, style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+
+// اگر ستاپ در انتظار باطل شد (قیمت از حد ضرر گذشت) و معامله‌ای باز نیست، ستاپ ریست شود؛
+// خطوط فقط وقتی وجود دارند پاک می‌شوند (اگر نمایش ریسک خاموش باشد، خطی نیست).
+bool pendInvalid = not tradeActive and pendActive and barstate.isconfirmed and ((pendDir == 1 and close < pendSL) or (pendDir == -1 and close > pendSL))
+if pendInvalid
+    if not na(slLine)
+        line.delete(slLine)
+        line.delete(tp1Line)
+        line.delete(tp2Line)
+        label.delete(riskLabel)
+        slLine := na
+        tp1Line := na
+        tp2Line := na
+        riskLabel := na
+    pendActive := false
+    pendId := na
+    pendSrc := ""
+
+// تمدید خطوط
+if not na(slLine)
+    line.set_x2(slLine, bar_index + 20)
+    line.set_x2(tp1Line, bar_index + 20)
+    line.set_x2(tp2Line, bar_index + 20)
+    label.set_x(riskLabel, bar_index + 20)
+// خاموش‌کردن نمایش ریسک فقط خطوط را پاک می‌کند؛ ستاپ و بک‌تست سر جایشان می‌مانند.
+if (not showRisk or not showL3) and not na(slLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    label.delete(riskLabel)
+    slLine := na
+    tp1Line := na
+    tp2Line := na
+    riskLabel := na
+
+// ───────────────────────── کنترل‌های ریسک — دروازه ورود ─────────────────────────
+// همه این کنترل‌ها پیش‌فرض خاموش‌اند (۰ یا خاموش)؛ پس رفتار پیش‌فرض مثل ۵٫۱ می‌ماند.
+// آرایه‌های entryRisks و entrySrcs ریسک دلاری و منبع هر ورود را به ترتیب ذخیره می‌کنند؛
+// چون pyramiding=0 است و ورود فقط وقتی پوزیشنی باز نیست انجام می‌شود، ترتیب ورودها
+// با ترتیب معاملات بسته‌شده در strategy.closedtrades یکی است (برای آمار R و OB/۱۲۳).
+var float[] entryRisks = array.new_float()
+var string[] entrySrcs = array.new_string()
+var float dayStartEq = na
+var int tradesToday = 0
+var int consecLosses = 0
+var int lastClosedN = 0
+var int lastSLBar = na
+if na(dayStartEq) or ta.change(time("D")) != 0
+    dayStartEq := strategy.equity
+    tradesToday := 0
+// ردیابی معاملات بسته‌شده: وقتی تعدادشان بیشتر شد، نتیجه آخرین معامله خوانده می‌شود.
+int closedN = strategy.closedtrades
+if closedN > lastClosedN
+    float lastP = strategy.closedtrades.profit(closedN - 1)
+    string lastXc = strategy.closedtrades.exit_comment(closedN - 1)
+    if lastP < 0
+        consecLosses += 1
+    else
+        consecLosses := 0
+    if not na(lastXc) and lastXc == "SL"
+        lastSLBar := bar_index
+    lastClosedN := closedN
+float dayLoss = na(dayStartEq) ? 0.0 : dayStartEq - strategy.equity
+bool coolOk = cooldownAfterSL <= 0 or na(lastSLBar) or bar_index - lastSLBar > cooldownAfterSL
+bool canTrade = (maxDailyLoss <= 0 or dayLoss < maxDailyLoss) and (maxConsecLosses <= 0 or consecLosses < maxConsecLosses) and (maxTradesPerDay <= 0 or tradesToday < maxTradesPerDay) and coolOk and (minATR <= 0 or (atrOk and atr >= minATR)) and (not tradeOnlyInSession or inLondonRaw or inNyRaw)
+
+// ───────────────────────── ورود و خروج بک‌تست — از ستاپ در انتظار ─────────────────────────
+// ورود فقط وقتی انجام می‌شود که همین کندل ستاپ جدیدی ذخیره شده باشد (setupStoredNow)،
+// داخل بازه بک‌تست باشیم، پوزیشنی باز نباشد و دروازه کنترل ریسک (canTrade) باز باشد.
+// سطوح معامله از ستاپ در انتظار «قفل» می‌شوند (trade*) و ستاپ جدید دیگر آن‌ها را عوض نمی‌کند.
+if useBacktest and inRange and strategy.position_size == 0 and barstate.isconfirmed and setupStoredNow and canTrade
+    float riskAmt = math.abs(pendEntry - pendSL)
+    if riskAmt > 0 and pendEntry > 0
+        // حجم: ریسک دلاری ÷ (فاصله حد ضرر × ارزش یک واحد قیمت) — بر اساس قرارداد نماد.
+        // syminfo.pointvalue ارزش دلاری یک واحد تغییر قیمت برای یک واحد حجم است؛ برای
+        // OANDA:XAUUSD برابر ۱ است (۱ اونس، ۱ دلار حرکت = ۱ دلار)، برای قرارداد ۱۰۰ اونسی
+        // ۱۰۰ است. اگر فید مقدار معتبر ندهد، با ۱٫۰ ادامه می‌دهیم و در لاگ نمی‌نویسیم.
+        float pv = na(syminfo.pointvalue) or syminfo.pointvalue <= 0 ? 1.0 : syminfo.pointvalue
+        float riskMoney = strategy.equity * riskPct / 100.0
+        float qtyRaw = riskMoney / (riskAmt * pv)
+        // سقف‌ها: حداکثر حجم، حداکثر ارزش اسمی، حداکثر مصرف مارجین.
+        float qtyCap = math.min(maxQty, maxNotional / (pendEntry * pv))
+        float marginPerUnit = pendEntry * pv / leverage
+        float qtyByMargin = marginPerUnit > 0 ? strategy.equity * maxMarginUsePct / 100.0 / marginPerUnit : qtyRaw
+        float qty = math.min(qtyRaw, qtyCap, qtyByMargin)
+        // گرد کردن به پایین‌ترین مضرب گام حجم.
+        qty := math.floor(qty / qtyStep) * qtyStep
+        if qty >= minQty
+            // قفل‌کردن سطوح معامله — از همین لحظه خطوط روی چارت هم سطوح معامله را نشان می‌دهند.
+            tradeActive := true
+            tradeDir := pendDir
+            tradeEntry := pendEntry
+            tradeSL := pendSL
+            tradeTP1 := pendTP1
+            tradeTP2 := pendTP2
+            tradeId := pendId
+            tradeSrc := pendSrc
+            tradeTP1Done := false
+            tradeEntryBar := bar_index
+            tradesToday += 1
+            // ذخیره ریسک دلاری واقعی و منبع ستاپ برای آمار بک‌تست.
+            array.push(entryRisks, riskAmt * qty * pv)
+            array.push(entrySrcs, pendSrc)
+            if not na(slLine)
+                line.delete(slLine)
+                line.delete(tp1Line)
+                line.delete(tp2Line)
+                label.delete(riskLabel)
+            if showRisk and showL3
+                slLine := line.new(bar_index, tradeSL, bar_index + 20, tradeSL, color=color.red, style=line.style_dashed)
+                tp1Line := line.new(bar_index, tradeTP1, bar_index + 20, tradeTP1, color=color.green, style=line.style_dashed)
+                tp2Line := line.new(bar_index, tradeTP2, bar_index + 20, tradeTP2, color=color.green, style=line.style_dotted)
+                riskLabel := label.new(bar_index + 20, tradeTP1, "ورود " + str.tostring(tradeEntry, format.mintick) + " | حد ضرر " + str.tostring(tradeSL, format.mintick) + " | " + tradeSrc + " | معامله باز", style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+            if pendDir == 1
+                strategy.entry("Long", strategy.long, qty=qty, comment="Long " + pendSrc)
+                // معماری خروج ۵٫۲: دو خروج ۵۰٪ و ۱۰۰٪ از «باقی‌مانده» که هر دو حد ضرر محافظ
+                // دارند؛ مجموع خروج‌ها دقیقاً کل پوزیشن را پوشش می‌دهد و هیچ مقداری بدون
+                // محافظ نمی‌ماند. comment_profit/comment_loss می‌گوید خروج با حد سود بوده یا
+                // حد ضرر — دسته‌بندی آمار از همین کامنت خوانده می‌شود.
+                strategy.exit("TP1", "Long", qty_percent=50, limit=tradeTP1, stop=tradeSL, comment_profit="TP1", comment_loss="SL")
+                strategy.exit("TP2", "Long", qty_percent=100, limit=tradeTP2, stop=tradeSL, comment_profit="TP2", comment_loss="SL")
+            else if pendDir == -1
+                strategy.entry("Short", strategy.short, qty=qty, comment="Short " + pendSrc)
+                strategy.exit("TP1", "Short", qty_percent=50, limit=tradeTP1, stop=tradeSL, comment_profit="TP1", comment_loss="SL")
+                strategy.exit("TP2", "Short", qty_percent=100, limit=tradeTP2, stop=tradeSL, comment_profit="TP2", comment_loss="SL")
+
+// حداکثر مدت نگهداری معامله (اگر فعال باشد): معامله باز که بیش از maxHoldBars کندل
+// باز مانده باشد، با قیمت بازار بسته می‌شود و در آمار «بسته‌شدن دیگر» شمرده می‌شود.
+if useBacktest and tradeActive and maxHoldBars > 0 and not na(tradeEntryBar) and barstate.isconfirmed and strategy.position_size != 0 and bar_index - tradeEntryBar >= maxHoldBars
+    strategy.close(tradeDir == 1 ? "Long" : "Short", comment="MAXHOLD")
+
+// ───────────────────────── شمارش زنده TP1 ─────────────────────────
+// خروج جزئی TP1 هیچ معامله بسته‌شده‌ای نمی‌سازد، پس در strategy.closedtrades دیده نمی‌شود.
+// تنها نشانه‌اش نصف‌شدن حجم پوزیشن باز است: وقتی حجم باز از کندل قبل کمتر شد ولی صفر
+// نشد، یعنی TP1 خورده است.
+var float prevPosSize = 0.0
+var int tp1HitsLive = 0
+// قدر مطلق: حجم فروش منفی است؛ بدون آن TP1 فروش‌ها هیچ‌وقت شمرده نمی‌شد.
+if prevPosSize != 0 and strategy.position_size != 0 and math.abs(strategy.position_size) < math.abs(prevPosSize)
+    tp1HitsLive += 1
+    tradeTP1Done := true
+    if not na(riskLabel)
+        label.set_text(riskLabel, "ورود " + str.tostring(tradeEntry, format.mintick) + " | حد ضرر " + str.tostring(tradeSL, format.mintick) + " | " + tradeSrc + " | TP1 ✓")
+prevPosSize := strategy.position_size
+
+// بسته‌شدن معامله: وقتی پوزیشن واقعاً صفر شد، حالت معامله ریست می‌شود تا ستاپ‌های
+// جدید دوباره بتوانند وارد شوند؛ اگر ستاپ در انتظاری هست، خطوط آن نشان داده می‌شود.
+// گارد setupStoredNow جلوی ریست اشتباه در همان کندل ورود را می‌گیرد (در کندل ورود
+// هنوز پوزیشنی باز نشده و position_size صفر است).
+bool tradeJustClosed = tradeActive and strategy.position_size == 0 and barstate.isconfirmed and not setupStoredNow
+if tradeJustClosed
+    tradeActive := false
+    tradeDir := 0
+    tradeEntry := na
+    tradeSL := na
+    tradeTP1 := na
+    tradeTP2 := na
+    tradeId := na
+    tradeSrc := ""
+    tradeTP1Done := false
+    tradeEntryBar := na
+    if not na(slLine)
+        line.delete(slLine)
+        line.delete(tp1Line)
+        line.delete(tp2Line)
+        label.delete(riskLabel)
+        slLine := na
+        tp1Line := na
+        tp2Line := na
+        riskLabel := na
+    if pendActive and showRisk and showL3
+        slLine := line.new(bar_index, pendSL, bar_index + 20, pendSL, color=color.red, style=line.style_dashed)
+        tp1Line := line.new(bar_index, pendTP1, bar_index + 20, pendTP1, color=color.green, style=line.style_dashed)
+        tp2Line := line.new(bar_index, pendTP2, bar_index + 20, pendTP2, color=color.green, style=line.style_dotted)
+        riskLabel := label.new(bar_index + 20, pendTP1, "ورود " + str.tostring(pendEntry, format.mintick) + " | حد ضرر " + str.tostring(pendSL, format.mintick) + " | " + pendSrc, style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+
+// ───────────────────────── آمار بک‌تست — محاسبه در آخرین کندل ─────────────────────────
+// جدول آمار پایین-راست چارت است تا با داشبورد (بالا-راست) هم‌پوشانی نداشته باشد.
+// «معامله تکمیل‌شده» = یک پوزیشن که کامل بسته شده است (یک رکورد در closedtrades).
+// «خروج» = هر بار که بخشی از پوزیشن بسته می‌شود؛ TP1 یک خروج جزئی است و معامله
+// مستقلی شمرده نمی‌شود. جمع خروج‌ها = TP1 + TP2 + SL. «بسته‌شدن دیگر» = معاملاتی
+// که شبیه‌ساز در پایان بازه یا با MAXHOLD بسته است (کامنت TP2/SL ندارند).
+// حداکثر افت بر اساس «بسته‌شدن کندل» (equity در پایان کندل) حساب می‌شود، نه افت
+// داخل کندل؛ افت داخل کندل بدون calc_on_every_tick در دسترس نیست.
+var table stats = table.new(position.bottom_right, 2, 22, border_width=1)
+var float peakEq = na
+var float maxDD = 0.0
+var float maxDDPct = 0.0
+float eq = strategy.equity
+if na(peakEq)
+    peakEq := eq
+if eq > peakEq
+    peakEq := eq
+if peakEq - eq > maxDD
+    maxDD := peakEq - eq
+    maxDDPct := peakEq > 0 ? (peakEq - eq) / peakEq * 100.0 : 0.0
+
+if barstate.islast
+    // در Pine v6 خودِ strategy.closedtrades تعداد معاملات بسته‌شده است (عدد صحیح).
+    int n = strategy.closedtrades
+    int wins = 0
+    int longN = 0
+    int shortN = 0
+    int longWins = 0
+    int shortWins = 0
+    int tp2Hits = 0
+    int slHits = 0
+    int obN = 0
+    int obWins = 0
+    int xN = 0
+    int xWins = 0
+    float totProfit = 0.0
+    float grossWin = 0.0
+    float grossLoss = 0.0
+    float totR = 0.0
+    float obProfit = 0.0
+    float xProfit = 0.0
+    if n > 0
+        for i = 0 to n - 1
+            float p = strategy.closedtrades.profit(i)
+            totProfit += p
+            if p > 0
+                wins += 1
+                grossWin += p
+            else
+                grossLoss += -p
+            // جهت معامله از کامنت ورود.
+            string ec = strategy.closedtrades.entry_comment(i)
+            bool isLong = not na(ec) and str.startswith(ec, "Long")
+            if isLong
+                longN += 1
+                if p > 0
+                    longWins += 1
+            else
+                shortN += 1
+                if p > 0
+                    shortWins += 1
+            // R چندبرابر: سود تقسیم بر ریسک دلاری واقعی همان معامله (آرایه entryRisks).
+            if i < array.size(entryRisks)
+                float r0 = array.get(entryRisks, i)
+                if r0 > 0
+                    totR += p / r0
+            // منبع ستاپ: OB یا ۱-۲-۳ (آرایه entrySrcs، به ترتیب ورود).
+            string src = i < array.size(entrySrcs) ? array.get(entrySrcs, i) : ""
+            if str.startswith(src, "OB")
+                obN += 1
+                obProfit += p
+                if p > 0
+                    obWins += 1
+            else if src == "123"
+                xN += 1
+                xProfit += p
+                if p > 0
+                    xWins += 1
+            // دسته‌بندی خروج نهایی با کامنت خروج: TP2 یا SL — نه با مقایسه قیمت.
+            string xc = strategy.closedtrades.exit_comment(i)
+            if not na(xc)
+                if xc == "TP2"
+                    tp2Hits += 1
+                else if xc == "SL"
+                    slHits += 1
+    int totalExits = tp1HitsLive + tp2Hits + slHits
+    int otherCloses = n - tp2Hits - slHits
+    float winRate = n > 0 ? wins / n * 100.0 : 0.0
+    float longWR = longN > 0 ? longWins / longN * 100.0 : 0.0
+    float shortWR = shortN > 0 ? shortWins / shortN * 100.0 : 0.0
+    float pf = grossLoss > 0 ? grossWin / grossLoss : na
+    float avgProfit = n > 0 ? totProfit / n : 0.0
+    float avgR = n > 0 ? totR / n : 0.0
+    float obWR = obN > 0 ? obWins / obN * 100.0 : 0.0
+    float xWR = xN > 0 ? xWins / xN * 100.0 : 0.0
+    table.cell(stats, 0, 0, "پیپ ۵٫۲ — بک‌تست طلا", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(stats, 1, 0, "دمو — نه تضمین سود", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(stats, 0, 1, "معاملات تکمیل‌شده", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 1, str.tostring(n), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 2, "تعداد خروج‌ها (TP1+TP2+SL)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 2, str.tostring(totalExits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 3, "خرید / فروش", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 3, str.tostring(longN) + " / " + str.tostring(shortN), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 4, "Win Rate", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 4, str.tostring(winRate, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 5, "Win Rate خرید", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 5, str.tostring(longWR, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 6, "Win Rate فروش", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 6, str.tostring(shortWR, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 7, "Profit Factor", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 7, na(pf) ? "—" : str.tostring(pf, "#.##"), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 8, "سود خالص", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 8, str.tostring(totProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 9, "سود ناخالص", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 9, str.tostring(grossWin, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 10, "ضرر ناخالص", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 10, str.tostring(grossLoss, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 11, "حداکثر افت (بسته‌شدن کندل)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 11, str.tostring(maxDD, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 12, "حداکثر افت (٪)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 12, str.tostring(maxDDPct, "#.##") + "٪", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 13, "میانگین R", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 13, str.tostring(avgR, "#.##") + "R", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 14, "TP1 (نیمه‌خروج)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 14, str.tostring(tp1HitsLive), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 15, "TP2", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 15, str.tostring(tp2Hits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 16, "SL", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 16, str.tostring(slHits), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 17, "بسته‌شدن دیگر", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 17, str.tostring(otherCloses), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 18, "میانگین سود هر معامله", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 18, str.tostring(avgProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 19, "عملکرد OB", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 19, str.tostring(obN) + " معامله، " + str.tostring(obWR, "#.##") + "٪، " + str.tostring(obProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 20, "عملکرد ۱-۲-۳", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 20, str.tostring(xN) + " معامله، " + str.tostring(xWR, "#.##") + "٪، " + str.tostring(xProfit, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 0, 21, "توجه", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(stats, 1, 21, "افت بر اساس بسته‌شدن کندل است", text_color=color.white, bgcolor=color.new(color.gray, 0))
+
+// ───────────────────────── داشبورد فارسی ─────────────────────────
+var table dash = table.new(position.top_right, 2, 8, border_width=1)
+var string lastSignal = "—"
+if obBullTouchEvt
+    lastSignal := "لمس اردر بلاک صعودی"
+if obBearTouchEvt
+    lastSignal := "لمس اردر بلاک نزولی"
+if bull123Evt
+    lastSignal := "الگوی ۱-۲-۳ صعودی"
+if bear123Evt
+    lastSignal := "الگوی ۱-۲-۳ نزولی"
+if bullFlagEvt
+    lastSignal := "پرچم صعودی (آزمایشی)"
+if bearFlagEvt
+    lastSignal := "پرچم نزولی (آزمایشی)"
+if bosUpEvt
+    lastSignal := "شکست ساختار صعودی"
+if bosDnEvt
+    lastSignal := "شکست ساختار نزولی"
+if chochUpEvt
+    lastSignal := "تغییر روند صعودی"
+if chochDnEvt
+    lastSignal := "تغییر روند نزولی"
+if sweepUpEvt or sweepDnEvt
+    lastSignal := "جاروی نقدینگی"
+
+string htfTxt = not htfValid ? (htfFallback ? "نامعتبر — روند چارت" : "نامعتبر (بلوکه)") : htfTrendSafe == 1 ? "صعودی" : htfTrendSafe == -1 ? "نزولی" : "خنثی"
+string ltfTxt = trendState == 1 ? "صعودی" : trendState == -1 ? "نزولی" : "خنثی"
+string structTxt = lastStruct == "—" ? (structState == 1 ? "صعودی" : structState == -1 ? "نزولی" : "خنثی") : lastStruct
+string scoreTxt = na(bestObScore) ? "—" : str.tostring(math.round(bestObScore)) + " / ۱۰۰"
+
+if showDash and showL1 and barstate.islast
+    dashPosVal = dashPos == "Top Left" ? position.top_left : dashPos == "Bottom Right" ? position.bottom_right : dashPos == "Bottom Left" ? position.bottom_left : position.top_right
+    table.set_position(dash, dashPosVal)
+    table.cell(dash, 0, 0, "پیپ ۵٫۲ | " + syminfo.ticker, text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(dash, 1, 0, timeframe.period, text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(dash, 0, 1, "روند HTF (" + htfTF + ")", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 1, htfTxt, text_color=color.white, bgcolor=htfTrendSafe == 1 ? color.new(color.green, 0) : htfTrendSafe == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+    table.cell(dash, 0, 2, "روند فعلی", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 2, ltfTxt, text_color=color.white, bgcolor=trendState == 1 ? color.new(color.green, 0) : trendState == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+    table.cell(dash, 0, 3, "ATR(14)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 3, str.tostring(atr, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    if not dashCompact
+        table.cell(dash, 0, 4, "ساختار بازار", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 4, structTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 5, "سشن", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 5, sessName, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 6, "امتیاز بهترین OB", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 6, scoreTxt, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 7, "آخرین رویداد", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 7, lastSignal, text_color=color.white, bgcolor=color.new(color.gray, 0))
+    else
+        table.cell(dash, 0, 4, "آخرین رویداد", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 4, lastSignal, text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 5, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 5, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 6, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 6, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 0, 7, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+        table.cell(dash, 1, 7, "", text_color=color.white, bgcolor=color.new(color.gray, 0))
+
+// ───────────────────────── هشدارها — ۱۴ هشدار تحلیلی + هشدار سفارش ─────────────────────────
+// در ۵٫۱ از alertcondition استفاده شده بود که داخل strategy() هیچ اثری ندارد (هشدار
+// کامپایلر در ۵٫۱). حالا با alert() فراخوانی می‌شود: هر رویداد یک فراخوانی جدا دارد،
+// پس چند رویداد در یک کندل هیچ‌کدام گم نمی‌شوند. همه روی کندل تأییدشده و فقط یک بار
+// در هر کندل (freq_once_per_bar_close) صادر می‌شوند. پیام‌ها پویا هستند: نماد، تایم‌فریم،
+// قیمت و رویداد در متن می‌آید و با Webhook تریدینگ‌ویو سازگار است. برای هشدار تلگرام،
+// در TradingView یک Alert روی همین استراتژی بساز و گزینه «alert() function calls» را
+// انتخاب کن؛ هیچ توکن یا کلیدی داخل کد Pine قرار نمی‌گیرد.
+string alSym = syminfo.ticker + " | " + timeframe.period + " | "
+if alOBBull and obBullTouchEvt
+    alert("پیپ ۵٫۲ | " + alSym + "لمس اردر بلاک صعودی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alOBBear and obBearTouchEvt
+    alert("پیپ ۵٫۲ | " + alSym + "لمس اردر بلاک نزولی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alBOSBull and bosUpEvt
+    alert("پیپ ۵٫۲ | " + alSym + "شکست ساختار صعودی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alBOSBear and bosDnEvt
+    alert("پیپ ۵٫۲ | " + alSym + "شکست ساختار نزولی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alCHBull and chochUpEvt
+    alert("پیپ ۵٫۲ | " + alSym + "تغییر روند صعودی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alCHBear and chochDnEvt
+    alert("پیپ ۵٫۲ | " + alSym + "تغییر روند نزولی | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alSwpBull and sweepUpEvt
+    alert("پیپ ۵٫۲ | " + alSym + "جاروی نقدینگی بالای سقف | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alSwpBear and sweepDnEvt
+    alert("پیپ ۵٫۲ | " + alSym + "جاروی نقدینگی زیر کف | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFVGBull and fvgBullEvt
+    alert("پیپ ۵٫۲ | " + alSym + "گپ ارزش منصفانه صعودی ساخته شد | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFVGBear and fvgBearEvt
+    alert("پیپ ۵٫۲ | " + alSym + "گپ ارزش منصفانه نزولی ساخته شد | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if al123Bull and bull123Evt
+    alert("پیپ ۵٫۲ | " + alSym + "الگوی ۱-۲-۳ صعودی نقطه ۲ را شکست | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if al123Bear and bear123Evt
+    alert("پیپ ۵٫۲ | " + alSym + "الگوی ۱-۲-۳ نزولی نقطه ۲ را شکست | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFlgBull and bullFlagEvt
+    alert("پیپ ۵٫۲ | " + alSym + "پرچم صعودی شکست (آزمایشی) | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if alFlgBear and bearFlagEvt
+    alert("پیپ ۵٫۲ | " + alSym + "پرچم نزولی شکست (آزمایشی) | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+// هشدار پر شدن سفارش — جدا از هشدارهای تحلیلی.
+// ورود: در کندل ورود و وقتی معامله واقعاً باز شد (tradeActive).
+// بسته‌شدن: در کندلی که پوزیشن واقعاً صفر شد (tradeJustClosed).
+if alOrderFill and setupStoredNow and tradeActive
+    alert("پیپ ۵٫۲ | " + alSym + "ورود معامله " + (tradeDir == 1 ? "خرید" : "فروش") + " | " + tradeSrc + " | ورود " + str.tostring(tradeEntry, format.mintick) + " | حد ضرر " + str.tostring(tradeSL, format.mintick), alert.freq_once_per_bar_close)
+if alOrderFill and tradeJustClosed
+    alert("پیپ ۵٫۲ | " + alSym + "معامله بسته شد | قیمت " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)

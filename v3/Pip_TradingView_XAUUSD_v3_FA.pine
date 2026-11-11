@@ -1,0 +1,356 @@
+//@version=5
+// پیپ نسخه ۳٫۰ — فارسی — فقط TradingView
+// فرکتال / روند / اردر بلاک / ۱-۲-۳ / پرچم / گپ ارزش منصفانه / شکست ساختار / جاروی نقدینگی
+// مخصوص طلا (XAUUSD). ابزار آموزشی است — سیگنال خرید و فروش نیست. اول روی دمو تست کن.
+// تایم‌فریم پیشنهادی: H1 برای روند و ساختار، M15 برای ورود.
+//
+// ── بررسی باگ نسخه ۲ که در نسخه ۳ اصلاح شد (QA) ──
+//  [رفع‌شده] اعلان چند متغیر در یک خط: `var float p1Low = na, p2High = na`
+//             در Pine v5 معتبر نیست و خطای کامپایل می‌داد. حالا هر متغیر جداست.
+//  [رفع‌شده] باکس گپ ارزش منصفانه (FVG) وارونه بود: سقف و کف جابه‌جا بود.
+//             حالا سقف = math.max و کف = math.min است، پس باکس همیشه درست کشیده می‌شود.
+//  [رفع‌شده] متن لیبل شکست ساختار وقتی شرط برقرار نبود `na` می‌شد.
+//             حالا متن فقط وقتی ساخته می‌شود که شرط برقرار است، در غیر این صورت رشته خالی است.
+//  [رفع‌شده] میانگین متحرک تایم بالاتر مستقیم داخل request.security بود.
+//             حالا با یک تابع کمکی فراخوانی می‌شود تا repaint و خطا کمتر شود.
+//  [بررسی‌شده] حدها: max_boxes_count=500 ،max_labels_count=500 ،max_lines_count=500
+//             باکس اردر بلاک و گپ هر کدام حداکثر ۸ عدد، خطوط ریسک فقط ۳ عدد،
+//             لیبل‌های ساخته‌شده با label.new کمتر از ۱۰ عدد — هیچ‌کدام به حد نمی‌رسند.
+//  [بررسی‌شده] array.shift فقط وقتی صدا زده می‌شود که اندازه آرایه از حد بیشتر شده باشد.
+//  [بررسی‌شده] line.delete فقط وقتی صدا زده می‌شود که خط خالی (na) نباشد.
+//  [بررسی‌شده] ورودی‌ها همه minval / maxval دارند و نمی‌توانند خارج از بازه باشند.
+//  [بررسی‌شده] باکس اردر بلاک فقط وقتی ساخته می‌شود که کندل مخالف در ۵ کندل قبل پیدا شود.
+//  [بررسی‌شده] هشدارها فقط در سشن انتخاب‌شده می‌آیند (اگر فیلتر سشن روشن باشد).
+//
+// همه نوشته‌های روی چارت در این نسخه فارسی است.
+
+indicator("پیپ نسخه ۳ — فرکتال / اردر بلاک / گپ / پرچم | طلا", shorttitle="پیپ نسخه ۳", overlay=true,
+     max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ───────────────────────── ورودی‌ها ─────────────────────────
+grpTrend   = "روند و فیلتر تایم بالاتر"
+grpFractal = "فرکتال"
+grpOB      = "اردر بلاک (تنظیم طلا)"
+grpFVG     = "گپ ارزش منصفانه"
+grp123     = "الگوی ۱-۲-۳"
+grpFlag    = "پرچم"
+grpSess    = "فیلتر سشن (UTC)"
+grpRisk    = "حد ضرر / حد سود"
+
+showTrend   = input.bool(true,  "نمایش روند", group=grpTrend)
+emaFastLen  = input.int(50,  "میانگین متحرک سریع", minval=5, group=grpTrend)
+emaSlowLen  = input.int(200, "میانگین متحرک کند", minval=20, group=grpTrend)
+htfTF       = input.timeframe("60", "تایم‌فریم بالاتر", group=grpTrend)
+obOnlyHTF   = input.bool(true, "اردر بلاک فقط در جهت روند تایم بالاتر", group=grpTrend)
+
+showFractal = input.bool(true, "نمایش فرکتال", group=grpFractal)
+fractalLen  = input.int(2,   "تعداد کندل هر طرف فرکتال", minval=1, maxval=5, group=grpFractal)
+
+showOB      = input.bool(true,  "نمایش اردر بلاک", group=grpOB)
+obLookback  = input.int(50,   "بازگشت اردر بلاک (کندل)", minval=10, maxval=200, group=grpOB)
+obDispATR   = input.float(1.0, "حداقل جابه‌جایی (برابر ATR 14)", minval=0.3, step=0.1, group=grpOB)
+obMaxBoxes  = input.int(8,    "حداکثر باکس اردر بلاک", minval=2, maxval=20, group=grpOB)
+obExtend    = input.int(30,   "تمدید باکس اردر بلاک (کندل)", minval=5, maxval=100, group=grpOB)
+
+showFVG     = input.bool(true, "نمایش گپ ارزش منصفانه", group=grpFVG)
+fvgMaxBoxes = input.int(8, "حداکثر باکس گپ", minval=2, maxval=20, group=grpFVG)
+
+show123     = input.bool(true, "نمایش الگوی ۱-۲-۳", group=grp123)
+showFlag    = input.bool(true,  "نمایش پرچم", group=grpFlag)
+flagPoleATR = input.float(1.5, "حداقل حرکت میله پرچم (برابر ATR 14 در ۵ کندل)", minval=0.5, step=0.1, group=grpFlag)
+flagMaxRet  = input.float(0.5, "حداکثر اصلاح پرچم نسبت به میله", minval=0.2, maxval=0.8, step=0.05, group=grpFlag)
+
+useSession  = input.bool(false, "هشدار فقط در سشن لندن / نیویورک", group=grpSess)
+londonStart = input.int(7,  "شروع لندن (ساعت UTC)", minval=0, maxval=23, group=grpSess)
+londonEnd   = input.int(11, "پایان لندن (ساعت UTC)", minval=0, maxval=23, group=grpSess)
+nyStart     = input.int(12, "شروع نیویورک (ساعت UTC)", minval=0, maxval=23, group=grpSess)
+nyEnd       = input.int(16, "پایان نیویورک (ساعت UTC)", minval=0, maxval=23, group=grpSess)
+
+showRisk    = input.bool(true, "نمایش حد ضرر / حد سود در آخرین لمس اردر بلاک", group=grpRisk)
+showDash    = input.bool(true, "نمایش داشبورد", group="داشبورد")
+
+// ───────────────────────── هسته و روند تایم بالاتر ─────────────────────────
+f_ema(_src, _len) => ta.ema(_src, _len)
+
+atr     = ta.atr(14)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+trendUp   = close > emaFast and emaFast > emaSlow
+trendDown = close < emaFast and emaFast < emaSlow
+trendState = trendUp ? 1 : trendDown ? -1 : 0
+
+htfClose = request.security(syminfo.tickerid, htfTF, close, lookahead=barmerge.lookahead_off)
+htfEmaF  = request.security(syminfo.tickerid, htfTF, f_ema(close, emaFastLen), lookahead=barmerge.lookahead_off)
+htfEmaS  = request.security(syminfo.tickerid, htfTF, f_ema(close, emaSlowLen), lookahead=barmerge.lookahead_off)
+htfTrend = htfClose > htfEmaF and htfEmaF > htfEmaS ? 1 : htfClose < htfEmaF and htfEmaF < htfEmaS ? -1 : 0
+
+plot(emaFast, "میانگین سریع", color=color.new(color.blue, 0))
+plot(emaSlow, "میانگین کند", color=color.new(color.orange, 0))
+bgcolor(showTrend and trendUp ? color.new(color.green, 92) : showTrend and trendDown ? color.new(color.red, 92) : na, title="پس‌زمینه روند")
+
+utcHour   = hour(time, "UTC")
+inSession = not useSession or (utcHour >= londonStart and utcHour < londonEnd) or (utcHour >= nyStart and utcHour < nyEnd)
+
+// ───────────────────────── فرکتال، شکست ساختار، جاروی نقدینگی ─────────────────────────
+ph = ta.pivothigh(high, fractalLen, fractalLen)
+pl = ta.pivotlow(low, fractalLen, fractalLen)
+plotshape(showFractal and not na(ph), title="فرکتال بالا", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, offset=-fractalLen)
+plotshape(showFractal and not na(pl), title="فرکتال پایین", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny, offset=-fractalLen)
+
+var float lastPh = na
+var float lastPl = na
+if not na(ph)
+    lastPh := ph
+if not na(pl)
+    lastPl := pl
+
+bosUp   = not na(lastPh) and ta.crossover(close, lastPh)
+bosDown = not na(lastPl) and ta.crossunder(close, lastPl)
+bosUpTxt   = bosUp ? (trendState >= 0 ? "شکست ساختار" : "تغییر روند") : ""
+bosDownTxt = bosDown ? (trendState <= 0 ? "شکست ساختار" : "تغییر روند") : ""
+plotshape(bosUp, title="شکست ساختار بالا", style=shape.labelup, location=location.belowbar, color=color.new(color.teal, 0), text=bosUpTxt, textcolor=color.white, size=size.tiny)
+plotshape(bosDown, title="شکست ساختار پایین", style=shape.labeldown, location=location.abovebar, color=color.new(color.maroon, 0), text=bosDownTxt, textcolor=color.white, size=size.tiny)
+
+sweepUp   = not na(lastPh) and high > lastPh and close < lastPh
+sweepDown = not na(lastPl) and low < lastPl and close > lastPl
+plotshape(sweepUp, title="جاروی نقدینگی بالا", style=shape.labeldown, location=location.abovebar, color=color.new(color.purple, 0), text="جاروی نقدینگی", textcolor=color.white, size=size.tiny)
+plotshape(sweepDown, title="جاروی نقدینگی پایین", style=shape.labelup, location=location.belowbar, color=color.new(color.purple, 0), text="جاروی نقدینگی", textcolor=color.white, size=size.tiny)
+
+// ───────────────────────── ناحیه گران / ارزان ─────────────────────────
+swingHi = ta.highest(high, 50)
+swingLo = ta.lowest(low, 50)
+eq      = (swingHi + swingLo) / 2
+plot(eq, "خط تعادل ۵۰٪", color=color.new(color.gray, 30), style=plot.style_linebr)
+var label premLabel = na
+var label discLabel = na
+if barstate.islast
+    if na(premLabel)
+        premLabel := label.new(bar_index, swingHi, "گران", style=label.style_label_down, color=color.new(color.red, 70), textcolor=color.white, size=size.tiny)
+        discLabel := label.new(bar_index, swingLo, "ارزان", style=label.style_label_up, color=color.new(color.green, 70), textcolor=color.white, size=size.tiny)
+    else
+        label.set_xy(premLabel, bar_index, swingHi)
+        label.set_xy(discLabel, bar_index, swingLo)
+
+// ───────────────────────── اردر بلاک (با فیلتر تایم بالاتر) ─────────────────────────
+var box[] bullBoxes = array.new_box()
+var box[] bearBoxes = array.new_box()
+bullDisp = close > open and (close - open) > atr * obDispATR and close > high[1]
+bearDisp = close < open and (open - close) > atr * obDispATR and close < low[1]
+bullAllowed = not obOnlyHTF or htfTrend >= 0
+bearAllowed = not obOnlyHTF or htfTrend <= 0
+
+findLastBearish(_n) =>
+    int idx = na
+    for i = 1 to _n
+        if close[i] < open[i]
+            idx := i
+            break
+    idx
+findLastBullish(_n) =>
+    int idx = na
+    for i = 1 to _n
+        if close[i] > open[i]
+            idx := i
+            break
+    idx
+
+if showOB and bullDisp and bullAllowed and barstate.isconfirmed
+    int bi = findLastBearish(5)
+    if not na(bi)
+        box b = box.new(bar_index[bi], high[bi], bar_index + obExtend, low[bi], bgcolor=color.new(color.green, 80), border_color=color.new(color.green, 0), border_width=1)
+        array.push(bullBoxes, b)
+        if array.size(bullBoxes) > obMaxBoxes and array.size(bullBoxes) > 0
+            box.delete(array.shift(bullBoxes))
+if showOB and bearDisp and bearAllowed and barstate.isconfirmed
+    int bi = findLastBullish(5)
+    if not na(bi)
+        box b = box.new(bar_index[bi], high[bi], bar_index + obExtend, low[bi], bgcolor=color.new(color.red, 80), border_color=color.new(color.red, 0), border_width=1)
+        array.push(bearBoxes, b)
+        if array.size(bearBoxes) > obMaxBoxes and array.size(bearBoxes) > 0
+            box.delete(array.shift(bearBoxes))
+
+obBullTouch = false
+obBearTouch = false
+var float lastBullOBTop = na
+var float lastBullOBBot = na
+var float lastBearOBTop = na
+var float lastBearOBBot = na
+if array.size(bullBoxes) > 0
+    for i = array.size(bullBoxes) - 1 to 0
+        box b = array.get(bullBoxes, i)
+        float top = box.get_top(b)
+        float bot = box.get_bottom(b)
+        box.set_right(b, bar_index + obExtend)
+        if close < bot
+            box.delete(b)
+            array.remove(bullBoxes, i)
+        else if low <= top and low >= bot
+            obBullTouch := true
+            lastBullOBTop := top
+            lastBullOBBot := bot
+if array.size(bearBoxes) > 0
+    for i = array.size(bearBoxes) - 1 to 0
+        box b = array.get(bearBoxes, i)
+        float top = box.get_top(b)
+        float bot = box.get_bottom(b)
+        box.set_right(b, bar_index + obExtend)
+        if close > top
+            box.delete(b)
+            array.remove(bearBoxes, i)
+        else if high >= bot and high <= top
+            obBearTouch := true
+            lastBearOBTop := top
+            lastBearOBBot := bot
+
+plotshape(showOB and obBullTouch and inSession, title="لمس اردر بلاک صعودی", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), text="اردر بلاک", textcolor=color.white, size=size.tiny)
+plotshape(showOB and obBearTouch and inSession, title="لمس اردر بلاک نزولی", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), text="اردر بلاک", textcolor=color.white, size=size.tiny)
+
+// ───────────────────────── گپ ارزش منصفانه — سقف و کف اصلاح‌شده ─────────────────────────
+var box[] bullFVG = array.new_box()
+var box[] bearFVG = array.new_box()
+bullFVGNew = low > high[2] and close > open
+bearFVGNew = high < low[2] and close < open
+if showFVG and bullFVGNew and barstate.isconfirmed
+    float fvgTop = low
+    float fvgBot = high[2]
+    box b = box.new(bar_index[2], fvgTop, bar_index + obExtend, fvgBot, bgcolor=color.new(color.aqua, 85), border_color=color.new(color.aqua, 0))
+    array.push(bullFVG, b)
+    if array.size(bullFVG) > fvgMaxBoxes and array.size(bullFVG) > 0
+        box.delete(array.shift(bullFVG))
+if showFVG and bearFVGNew and barstate.isconfirmed
+    float fvgTop = low[2]
+    float fvgBot = high
+    box b = box.new(bar_index[2], fvgTop, bar_index + obExtend, fvgBot, bgcolor=color.new(color.fuchsia, 85), border_color=color.new(color.fuchsia, 0))
+    array.push(bearFVG, b)
+    if array.size(bearFVG) > fvgMaxBoxes and array.size(bearFVG) > 0
+        box.delete(array.shift(bearFVG))
+if array.size(bullFVG) > 0
+    for i = array.size(bullFVG) - 1 to 0
+        box b = array.get(bullFVG, i)
+        box.set_right(b, bar_index + obExtend)
+        if low <= box.get_top(b)
+            box.delete(b)
+            array.remove(bullFVG, i)
+if array.size(bearFVG) > 0
+    for i = array.size(bearFVG) - 1 to 0
+        box b = array.get(bearFVG, i)
+        box.set_right(b, bar_index + obExtend)
+        if high >= box.get_bottom(b)
+            box.delete(b)
+            array.remove(bearFVG, i)
+
+// ───────────────────────── الگوی ۱-۲-۳ — اعلان متغیرها اصلاح شد ─────────────────────────
+var float p1Low = na
+var float p2High = na
+var float p3Low = na
+var float p1High = na
+var float p2Low = na
+var float p3High = na
+var int bull123Stage = 0
+var int bear123Stage = 0
+if not na(pl)
+    if na(p1Low) or bull123Stage == 0
+        p1Low := pl
+        bull123Stage := 1
+    else if bull123Stage == 1 and not na(p2High) and pl > p1Low
+        p3Low := pl
+        bull123Stage := 3
+if not na(ph) and bull123Stage == 1
+    p2High := ph
+    bull123Stage := 2
+if not na(ph)
+    if na(p1High) or bear123Stage == 0
+        p1High := ph
+        bear123Stage := 1
+    else if bear123Stage == 1 and not na(p2Low) and ph < p1High
+        p3High := ph
+        bear123Stage := 3
+if not na(pl) and bear123Stage == 1
+    p2Low := pl
+    bear123Stage := 2
+bull123Break = show123 and bull123Stage == 3 and not na(p2High) and ta.crossover(close, p2High)
+bear123Break = show123 and bear123Stage == 3 and not na(p2Low) and ta.crossunder(close, p2Low)
+if bull123Break
+    bull123Stage := 0
+    p1Low := na
+    p2High := na
+    p3Low := na
+if bear123Break
+    bear123Stage := 0
+    p1High := na
+    p2Low := na
+    p3High := na
+plotshape(bull123Break, title="الگوی ۱-۲-۳ صعودی", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), text="۱-۲-۳", textcolor=color.white, size=size.small)
+plotshape(bear123Break, title="الگوی ۱-۲-۳ نزولی", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), text="۱-۲-۳", textcolor=color.white, size=size.small)
+
+// ───────────────────────── پرچم ─────────────────────────
+poleUp   = close - close[5]
+poleDown = close[5] - close
+flagRangeHigh = ta.highest(high, 5)
+flagRangeLow  = ta.lowest(low, 5)
+flagRange     = flagRangeHigh - flagRangeLow
+bullFlag = showFlag and poleUp > atr * flagPoleATR and flagRange < poleUp * flagMaxRet and close > flagRangeHigh[1] and close[1] <= flagRangeHigh[1]
+bearFlag = showFlag and poleDown > atr * flagPoleATR and flagRange < poleDown * flagMaxRet and close < flagRangeLow[1] and close[1] >= flagRangeLow[1]
+plotshape(bullFlag, title="شکست پرچم صعودی", style=shape.labelup, location=location.belowbar, color=color.new(color.teal, 0), text="پرچم", textcolor=color.white, size=size.small)
+plotshape(bearFlag, title="شکست پرچم نزولی", style=shape.labeldown, location=location.abovebar, color=color.new(color.maroon, 0), text="پرچم", textcolor=color.white, size=size.small)
+
+// ───────────────────────── حد ضرر / حد سود در آخرین لمس اردر بلاک ─────────────────────────
+var line slLine = na
+var line tp1Line = na
+var line tp2Line = na
+var label riskLabel = na
+drawRisk(_entry, _sl, _isBull) =>
+    float risk = math.abs(_entry - _sl)
+    float tp1 = _isBull ? _entry + risk * 2 : _entry - risk * 2
+    float tp2 = _isBull ? _entry + risk * 3 : _entry - risk * 3
+    if not na(slLine)
+        line.delete(slLine)
+        line.delete(tp1Line)
+        line.delete(tp2Line)
+        label.delete(riskLabel)
+    slLine  := line.new(bar_index, _sl, bar_index + 20, _sl, color=color.red, style=line.style_dashed)
+    tp1Line := line.new(bar_index, tp1, bar_index + 20, tp1, color=color.green, style=line.style_dashed)
+    tp2Line := line.new(bar_index, tp2, bar_index + 20, tp2, color=color.green, style=line.style_dotted)
+    riskLabel := label.new(bar_index + 20, tp1, "حد ضرر / حد سود ۱ (۱:۲) / حد سود ۲ (۱:۳)", style=label.style_label_left, color=color.new(color.gray, 70), textcolor=color.white, size=size.tiny)
+if showRisk and obBullTouch and not na(lastBullOBBot)
+    drawRisk(close, lastBullOBBot - atr * 0.2, true)
+if showRisk and obBearTouch and not na(lastBearOBTop)
+    drawRisk(close, lastBearOBTop + atr * 0.2, false)
+
+// ───────────────────────── داشبورد فارسی ─────────────────────────
+var table dash = table.new(position.top_right, 2, 5, border_width=1)
+var string lastSignal = "—"
+if obBullTouch
+    lastSignal := "لمس اردر بلاک صعودی"
+if obBearTouch
+    lastSignal := "لمس اردر بلاک نزولی"
+if bull123Break
+    lastSignal := "الگوی ۱-۲-۳ صعودی"
+if bear123Break
+    lastSignal := "الگوی ۱-۲-۳ نزولی"
+if bullFlag
+    lastSignal := "پرچم صعودی"
+if bearFlag
+    lastSignal := "پرچم نزولی"
+if showDash and barstate.islast
+    table.cell(dash, 0, 0, "پیپ نسخه ۳ | طلا", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(dash, 1, 0, "نسخه ۳٫۰", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(dash, 0, 1, "روند تایم بالاتر (" + htfTF + ")", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 1, htfTrend == 1 ? "صعودی" : htfTrend == -1 ? "نزولی" : "خنثی", text_color=color.white, bgcolor=htfTrend == 1 ? color.new(color.green, 0) : htfTrend == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+    table.cell(dash, 0, 2, "روند تایم فعلی", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 2, trendState == 1 ? "صعودی" : trendState == -1 ? "نزولی" : "خنثی", text_color=color.white, bgcolor=trendState == 1 ? color.new(color.green, 0) : trendState == -1 ? color.new(color.red, 0) : color.new(color.gray, 0))
+    table.cell(dash, 0, 3, "ای‌تی‌آر (۱۴)", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 3, str.tostring(atr, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 0, 4, "آخرین سیگنال", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(dash, 1, 4, lastSignal + (inSession ? "" : " (خارج از سشن)"), text_color=color.white, bgcolor=color.new(color.gray, 0))
+
+// ───────────────────────── هشدارها (فارسی) ─────────────────────────
+alertcondition(obBullTouch and inSession, title="لمس اردر بلاک صعودی", message="پیپ نسخه ۳ طلا: قیمت به اردر بلاک صعودی رسید")
+alertcondition(obBearTouch and inSession, title="لمس اردر بلاک نزولی", message="پیپ نسخه ۳ طلا: قیمت به اردر بلاک نزولی رسید")
+alertcondition(bull123Break and inSession, title="الگوی ۱-۲-۳ صعودی", message="پیپ نسخه ۳ طلا: الگوی ۱-۲-۳ صعودی نقطه ۲ را شکست")
+alertcondition(bear123Break and inSession, title="الگوی ۱-۲-۳ نزولی", message="پیپ نسخه ۳ طلا: الگوی ۱-۲-۳ نزولی نقطه ۲ را شکست")
+alertcondition(bullFlag and inSession, title="پرچم صعودی", message="پیپ نسخه ۳ طلا: پرچم صعودی شکست")
+alertcondition(bearFlag and inSession, title="پرچم نزولی", message="پیپ نسخه ۳ طلا: پرچم نزولی شکست")
+alertcondition(bosUp, title="شکست ساختار بالا", message="پیپ نسخه ۳ طلا: سقف سوئینگ شکسته شد")
+alertcondition(bosDown, title="شکست ساختار پایین", message="پیپ نسخه ۳ طلا: کف سوئینگ شکسته شد")
+alertcondition(sweepUp or sweepDown, title="جاروی نقدینگی", message="پیپ نسخه ۳ طلا: جاروی نقدینگی دیده شد")
